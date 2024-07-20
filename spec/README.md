@@ -21,7 +21,12 @@ The architecture of Endless Hole needs to be foremost hackable, maintainable, ro
     Making the code itself fun and interesting makes it more fun to hack on.
     This of course must be tempered by the needs of maintainability.
     The system should also aim to minimize surprises when composing elements or writing new code.
+
     Another thing that aids hackability is good documentation, which makes it easier to stay focused on one component without having to remember everything about other components you are interfacing with.
+    The best documentation is descriptive names (of all definitions) and descriptive types.
+    Additional documentation should strive to go beyond the names and types of things, with the goal being that it is effectively redundent.
+
+    Finally code that is small tends to be more hackable -- modules should aim to be as big as they need to be and no larger. Trying to hack in 1 million lines of code is a lot less fun than hacking on 1000 lines of code.
 
 - **Maintainability**
 
