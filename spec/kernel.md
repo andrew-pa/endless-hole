@@ -13,10 +13,12 @@ A process is a collection of threads who share the same:
 - memory address space and memory loans
 - supervisor process ID
 - role (process level and supervisor status)
+- exit state: running, successfully exited with some code, exited with a fault
 
 Processes start with a single main thread running at their entry point.
 Processes run until they exit or encounter a fault.
 When a process exits for any reason, the parent of the process can be notified.
+Processes exit successfully when their last thread exits, and have the exit code provided by this last exit.
 
 #### Process Roles
 The supervisor process is the process responsible for resource resolution in the supervised process.
@@ -37,9 +39,10 @@ A thread is a single path of execution in a process, and has its own:
 - program counter/CPU state
 - stack
 - message queue
+- state: running, waiting for message
 
 Threads are scheduled by the kernel for execution on the available CPUs in the system.
-Thread IDs are local to their process, a (process ID, thread ID) pair uniquely identifies a thread.
+Each thread has a unique ID.
 A single thread in each process is designated as the receiver thread for the process, and will receive messages from other processes who send messages to its process without a thread ID. By default, this is the main thread.
 
 ### Memory
@@ -50,7 +53,7 @@ All processes can request new pages of RAM from the kernel to be mapped into the
 The Rust borrowing idea is extended to interprocess shared memory - a memory "loan".
 Loans can either be shared and read-only (like a `&T`) or exclusive and read-write (like a `&mut T`).
 A loan consists of the base address in the loaning process and the number of pages to be loaned.
-The loan's extent must be an even number of pages.
+The loan's extent must be an whole number of pages.
 Driver processes can also request a loan from the kernel for an arbitrary region of physical addresses.
 
 In addition to loans, processes can move memory from their own process to another process.
@@ -60,17 +63,22 @@ The kernel's own virtual memory is identity mapped to cover the whole range of p
 ### Messages
 The kernel distributes messages between threads.
 Messages consist of 64-byte blocks, and can be a maximum of 16 blocks long (1024 bytes).
+Messages must be 8-byte aligned.
 Messages contain:
-- the process and thread ID of the sender
-- flags indicating if this message is a reply and if it contains a memory operation
+- the process and thread ID of the sender. The thread ID is optional.
+- flags indicating if this message is a reply, if it contains a memory operation, and if it should be deleted from the thread's receive queue yet
 - the number of blocks total used by the message
 - a unique message ID
 - optionally, the unique message ID this message is in response to
 - optionally, a memory loan or move that can be accepted by the receiver
 - some amount of data
 
-Messages are queued but if the queue overflows, the process will fault.
-Messages can be sent to a process' designated receiver thread without knowing the thread ID.
+Messages can be sent to a process' designated receiver thread without knowing the thread ID by leaving the thread ID unspecified.
+
+The kernel must store messages that are in transit, having been sent but not yet received.
+To do this, the kernel loans, for each thread, a region of memory to hold received messages for that thread.
+The process does not actually need to know about this loan, because it receives the necessary slices from the `receive` system call.
+Threads must mark the messages as read/deletable after they are done with them so the kernel can reuse the space.
 
 ### Boot Process
 The kernel boot process looks something like:
@@ -113,20 +121,89 @@ All system calls return zero on success, and an error code on failure. Any other
 
 TODO: should we use the immediate system call instruction value or pass the system call number via a register (like Linux?).
 
+(Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array.)
+
+#### `send`
+The `send` system call allows a process to send a message to another process.
+The kernel will inspect the message header and automatically process any associated memory operations while it generates the header on the receiver side.
+The message body will be copied to the receiver.
+
+##### Arguments
+| Name       | Type                 | Notes                            |
++------------+----------------------+----------------------------------+
+| `msg`      | `*const [MessageBlock]`| Pointer to the start of memory in user space that contains the message. |
+| `len`      | u8                   | Number of blocks the message contains total. |
+| `msg_id`   | `*mut MessageId`     | If non-null, writes the unique ID of this message if it is successfully sent. Otherwise the value is preserved. |
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+
+##### Flags
+The `send` call accepts the following flags:
+| Name           | Description                              |
++----------------+------------------------------------------+
+
+##### Errors
+- `NotFound`: the process/thread ID was unknown to the system.
+- `BadFormat`: the message header was incorrectly formatted.
+- `NoSpace`: the receiving process has too many queued messages and cannot receive the message.
+- `InvalidLength`: the length of the message is invalid, i.e. `len` is not in `1..=16`.
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `InvalidPointer`: the message pointer was null or invalid.
+
+#### `receive`
+The `receive` system call allows a process to receive a message from another process.
+By default, loans are automatically applied if attached, and their details relative to the receiver will be present in the received message header.
+The pointer returned by `receive` is valid until the message is marked for deletion.
+
+This call will by default set the thread to a waiting state if there are no messages.
+The thread will resume its running state when it receives a message.
+This can be disabled with the `Nonblocking` flag, which will return `WouldBlock` as an error instead if there are no messages.
+
+##### Arguments
+| Name       | Type                 | Notes                            |
++------------+----------------------+----------------------------------+
+| `msg`      | `*mut *mut [MessageBlock]`| Writes the pointer to the received message data here. |
+| `len`      | `*mut u8`            | Writes the number of blocks the message contains total. |
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+
+##### Flags
+The `receive` call accepts the following flags:
+| Name           | Description                              |
++----------------+------------------------------------------+
+| `Nonblocking`  | Causes the kernel to return the `WouldBlock` error if there are no messages instead of pausing the thread. |
+| `DenyMemoryTransfer` | Causes the kernel to ignore any memory operations contained in the received message. |
+
+##### Errors
+- `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `InvalidPointer`: the message pointer or length pointer was null or invalid.
+
+
+#### `current_process_id`
+#### `current_thread_id`
+#### `current_supervisor_id`
+#### `spawn_process`
+#### `exit_current_process`
+#### `kill_process`
+#### `spawn_thread`
+#### `allocate_heap_pages`
+#### `free_heap_pages`
+#### `driver_request_memory_region`
+#### `driver_register_interrupt`
+
+#### Error Codes
+| Number | Cause                                            |
++--------+--------------------------------------------------+
+
+### TODO: Interrupts
+### TODO: Debug Logging
 
 ## Implementation Thoughts
 This section is just some thoughts about implementation details. Things may or may not turn out like this.
 
 ### Messages
 Messages should be short enough to be copied in a few instructions.
-A single `LD1` instruction can load up to 64 bytes (using four actual loads), so messages should probably be about 64 bytes.
-If process ID (4 bytes), thread ID (2 bytes), flags (2 bits needed), and message block count (4 bits needed) take up 8 bytes, then that leaves 56 bytes.
-If the message ID takes up 4 bytes, then the message IDs can take at most 8 bytes, leaving at least 48 bytes.
-A loan/move takes up 16 bytes, 8 bytes for the address and 8 bytes for the length, leaving at least 32 bytes for additional information.
-All the remaining blocks in the message can be exclusively used for message payload.
+A single `LD1` instruction can load up to 64 bytes (using four actual loads), which motivates the message block size.
 
-The kernel must store messages that are in transit, having been sent but not yet received.
-We could do this in a unified "message heap" that contains all messages, and then store for each thread a queue of slices into this heap.
 
 ### Device Driver Servers
 A typical device driver server would be spawned as a 'driver' type process by the `init` process.
