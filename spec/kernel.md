@@ -132,6 +132,8 @@ TODO: should we use the immediate system call instruction value or pass the syst
 TODO: how do processes know how big a page in memory is? Ideally this is dynamic, because not all Arm chips support the same page sizes (for instance, Apple Silicon supports 16K pages but not 4K pages).
 TODO: describe structures passed as arguments.
 
+There should be a crate that provides nice definitions for each system call, and also defines the various types used and any useful operations on those types.
+
 (Notational note: we use the `*mut [T]` notation to indicate that there is a `*mut T` that actually has more than one `T` in an array.)
 
 ### `send`
@@ -160,6 +162,10 @@ The `send` call accepts the following flags:
 - `InvalidLength`: the length of the message is invalid, i.e. `len` is not in `1..=16`.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer was null or invalid.
+
+#### Types
+
+A `MessageBlock` is basically a `[u8; 64]`. The first block in the message must contain the message header.
 
 ### `receive`
 The `receive` system call allows a process to receive a message from another process.
@@ -406,21 +412,20 @@ The `driver_release_address_region` call accepts the following flags:
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
-Registers the current process with the kernel to receive a message when the specified hardware interrupt occurs.
-More than one driver may register for the same interrupt, and all of them will be sent the message.
+Registers a handler program with the kernel to handle when the specified hardware interrupt occurs.
+More than one driver may register for the same interrupt, and all of them will be executed.
+
+Interrupt handler programs are encoded in the Interrupt Handler Virtual Machine (IHVM) bytecode format, described in (`ihvm.md`)[./ihvm.md].
+If the handler panics, then a message will be sent to the driver containing the handler ID and panic error code.
+TODO: define exact layout of this message
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
 | `desc`     | `*const InterruptDesc` | Description of the interrupt to register for. |
-| `reciever_tid`      | optional thread ID   | Thread that will recieve the message. Defaults to the designated receiver. |
+| `handler_pgrm` | `*const InterruptHandlerProgram` | The program to execute to handle an interrupt. |
+| `handler_id` | `*mut handler ID` | Returns the ID of the handler. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
-
-#### Errors
-- `NotFound`: an unknown or invalid thread ID was given for the receiver.
-- `InvalidFlags`: an unknown or invalid flag combination was passed.
-- `BadFormat`: the interrupt description is invalid.
-- `InvalidPointer`: the description pointer was null or invalid.
 
 #### Flags
 The `driver_register_interrupt` call accepts the following flags:
@@ -428,16 +433,27 @@ The `driver_register_interrupt` call accepts the following flags:
 | Name           | Description                              |
 |----------------|------------------------------------------|
 
+#### Errors
+- `NotFound`: an unknown or invalid thread ID was given for the receiver.
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `BadFormat`: the interrupt description or program is invalid.
+- `InvalidPointer`: the description or program pointer was null or invalid.
+
+#### Types
+
+- `InterruptDesc`: describes a hardware interrupt
+- `InterruptHandlerProgram`: describes the interrupt handler program that will be executed. This includes the bytecode and the memory regions in the driver's address space that will be accessible, per the IHVM spec.
+
 ### `driver_unregister_interrupt`
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
-Unregisters the current process with the kernel to receive a message when the specified hardware interrupt occurs.
+Unregisters a previously registered interrupt handler. The handler will no longer run on interrupts after this call.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `desc`     | `*const InterruptDesc` | Description of the interrupt to remove the register for. |
+| `handler_id` | handler ID | The ID of the handler returned from `driver_register_interrupt`. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
@@ -447,15 +463,13 @@ The `driver_unregister_interrupt` call accepts the following flags:
 |----------------|------------------------------------------|
 
 #### Errors
+- `NotFound`: the specified handler was not found.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
-- `BadFormat`: the interrupt description is invalid.
-- `InvalidPointer`: the description pointer was null or invalid.
 
 ### Error Codes
 | Number | Cause                                            |
 |--------|--------------------------------------------------|
 
-## TODO: Interrupts
 ## TODO: Debug Logging
 
 # Implementation Thoughts
