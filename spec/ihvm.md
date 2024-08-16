@@ -5,7 +5,7 @@
 This document describes the virtual machine that executes interrupt handler programs on the behalf of drivers in the system.
 
 The purpose of the VM is allow device drivers to provide code to run directly in interrupt handlers to improve latency without compromising on process isolation.
-Programs in the VM should be easily verified that they don't misbehave, i.e. read/write to arbitrary memory or never halt.
+Programs in the VM should be easily verified that they don't misbehave, i.e. read/write to arbitrary memory.
 This makes the system more reliable and extensible, and keeps the kernel small.
 By running the programs directly in the kernel, we avoid the performance overhead of a context switch into the driver process.
 
@@ -20,6 +20,7 @@ A new VM instance is created each time an interrupt is handled.
 When the VM starts, information about the interrupt it is handling is loaded into the registers.
 Execution begins at the start of the program instruction blob and continues until a halt, panic or the end of the blob is reached.
 TODO: which ones and what data?
+The kernel also counts the number of instructions processed and stops the program after a certain number has been reached to prevent hanging in the interrupt handler. This value is configurable.
 
 The VM allows the program to copy data between regions, read and write from regions with the option for atomicity, and send messages to processes.
 
@@ -172,7 +173,7 @@ Divide by zero results in a panic with error code `0x0001_0000_0000_0000`
 ## `branch`
 Chooses between two code paths given a test on a register value.
 The instruction continues to the next instruction if the test fails, otherwise it jumps to the instruction indicated by adding the offset to the instruction pointer.
-It is not possible to use `branch` to jump backwards in the instruction stream.
+The destination offset is a signed integer.
 
 ### Parameters
 - Test Kind
@@ -200,10 +201,6 @@ It is not possible to use `branch` to jump backwards in the instruction stream.
 | T ≤ 0              | `0b101`  |
 | T ≥ 0              | `0b110`  |
 
-# `loop`
-Repeats a section of code for a certain number of repetitions.
-The repeat count is fixed at the start of the loop.
-
 ## `send`
 
 The `send` instruction sends a message to a process. The message must be previously constructed in one of the available memory regions.
@@ -212,7 +209,7 @@ The `send` instruction sends a message to a process. The message must be previou
 - Memory region containing the message
 - Offset to beginning of the message
 - Length of the message in message blocks
-- Register that will receive the ID of the sent message or zero if there was an error sending the message
+- Register that will be set to the result value: 0 on success, an error code as in the `send` system call on failure.
 
 ### Encoding
 

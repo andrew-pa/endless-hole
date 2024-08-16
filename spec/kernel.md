@@ -73,13 +73,12 @@ Messages consist of 64-byte blocks, and can be a maximum of 16 blocks long (1024
 Messages must be 8-byte aligned.
 Messages contain:
 
-- the process and thread ID of the sender. The thread ID is optional.
-- flags indicating if this message is a reply, if it contains a memory operation, and if it should be deleted from the thread's receive queue yet
-- the number of blocks total used by the message
-- a unique message ID
-- optionally, the unique message ID this message is in response to
-- optionally, a memory loan or move that can be accepted by the receiver
-- some amount of data
+- The process and thread ID of the sender. The thread ID is optional.
+- The number of memory operations contained in the message.
+- Flags indicating if it should be deleted from the thread's receive queue yet
+- The number of blocks total used by the message
+- Optionally, a memory loan or move that can be accepted by the receiver
+- Message payload data to be interpreted by the receiver
 
 Messages can be sent to a process' designated receiver thread without knowing the thread ID by leaving the thread ID unspecified.
 
@@ -119,9 +118,10 @@ See Section 3.6 of the specification for more details.
 This node may contain a kernel "command line" value in the `bootargs` property.
 This value will be parsed as JSON and may contain the following keys:
 
-- (TODO)
+- `init_exec_name`: filename of the init executable.
+- `max_ihvm_cycles`: maximum number of cycles allowed for an interrupt handler function.
 
-This node may also contain a `stdout-path` property. If present, this device will be the first choice for output from the kernel's debug UART logger.
+This node may also contain a `stdout-path` property. If present, this device will be the first choice for output from the kernel's debug logger.
 
 ## System Calls
 The primary user space interface for the kernel is system calls.
@@ -129,7 +129,6 @@ System calls are made using the normal Aarch64 system call calling convention.
 All system calls return zero on success, and an error code on failure. Any other outputs are returned via pointers.
 
 TODO: should we use the immediate system call instruction value or pass the system call number via a register (like Linux?).
-TODO: how do processes know how big a page in memory is? Ideally this is dynamic, because not all Arm chips support the same page sizes (for instance, Apple Silicon supports 16K pages but not 4K pages).
 TODO: describe structures passed as arguments.
 
 There should be a crate that provides nice definitions for each system call, and also defines the various types used and any useful operations on those types.
@@ -417,7 +416,6 @@ More than one driver may register for the same interrupt, and all of them will b
 
 Interrupt handler programs are encoded in the Interrupt Handler Virtual Machine (IHVM) bytecode format, described in (`ihvm.md`)[./ihvm.md].
 If the handler panics, then a message will be sent to the driver containing the handler ID and panic error code.
-TODO: define exact layout of this message
 
 #### Arguments
 | Name       | Type                 | Notes                            |
@@ -466,11 +464,26 @@ The `driver_unregister_interrupt` call accepts the following flags:
 - `NotFound`: the specified handler was not found.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 
-### Error Codes
-| Number | Cause                                            |
-|--------|--------------------------------------------------|
+### Errors
+This table collects all possible errors returned from system calls.
 
-## TODO: Debug Logging
+| Error            | Description                                                                                          |
+|------------------|------------------------------------------------------------------------------------------------------|
+| `NotFound`       | The specified process, thread, or handler ID was unknown or not found in the system.                 |
+| `BadFormat`      | The provided data was incorrectly formatted (e.g., message header, process image, interrupt data).   |
+| `InboxFull`      | The receiving process's message queue is full, and it cannot accept additional messages.             |
+| `InvalidLength`  | The specified length was invalid, out of bounds, or not in the acceptable range.                     |
+| `InvalidFlags`   | An unknown, unsupported, or invalid combination of flags was passed.                                 |
+| `InvalidPointer` | A pointer provided was null, invalid, or otherwise could not be used as expected.                    |
+| `OutOfMemory`    | The system does not have enough available memory to complete the requested operation.                |
+| `OutOfBounds`    | The specified address or memory region was outside the allowed range or otherwise invalid.           |
+| `WouldBlock`     | The operation would block the calling thread, but non-blocking mode was specified.                   |
+| `InUse`          | The requested resource or memory region is already in use by another process or driver.              |
+
+
+## Debug Logging
+The kernel will print its logs to the device indicated in the device tree, or the default platform debug device if known.
+This should be a simple UART.
 
 # Implementation Thoughts
 This section is just some thoughts about implementation details. Things may or may not turn out like this.
