@@ -1,0 +1,40 @@
+name: Build and Cache Vendored Submodules
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  build_u-boot:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Install just
+      uses: extractions/setup-just@v2
+
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Checkout U-boot submodule
+      run: |
+        git submodule update --init --depth 1 vendor/u-boot
+
+    - name: Get submodule commit hash
+      id: get-commit-hash
+      run: echo "U_BOOT_COMMIT_HASH=$(git -C vendor/u-boot rev-parse HEAD)" >> $GITHUB_ENV
+
+    - name: Cache u-boot build artifacts
+      uses: actions/cache@v3
+      with:
+        path: vendor/.build/u-boot
+        key: u-boot-${{ env.U_BOOT_COMMIT_HASH }}
+        restore-keys: |
+          u-boot-
+
+    - name: Build u-boot
+      run: |
+        just vendor::build_u-boot
