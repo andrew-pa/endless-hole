@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'vendor/u-boot/**'
   pull_request:
     branches:
       - '**'
+    paths:
+      - 'vendor/u-boot/**'
 
 jobs:
   build_u-boot:

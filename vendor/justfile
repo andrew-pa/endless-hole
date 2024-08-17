@@ -3,6 +3,10 @@ make_bin := `which make`
 target_prefix := "aarch64-linux-gnu-"
 output_dir := absolute_path("./.build")
 
+# Choose a task to run.
+default:
+    @just --choose
+
 # Delete all built vendor artifacts.
 clean:
     rm -rf {{output_dir}}
