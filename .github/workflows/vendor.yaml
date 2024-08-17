@@ -28,7 +28,7 @@ jobs:
       run: echo "U_BOOT_COMMIT_HASH=$(git -C vendor/u-boot rev-parse HEAD)" >> $GITHUB_ENV
 
     - name: Cache u-boot build artifacts
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: vendor/.build/u-boot
         key: u-boot-${{ env.U_BOOT_COMMIT_HASH }}

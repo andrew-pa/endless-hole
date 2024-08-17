@@ -1,14 +1,14 @@
 
 make_bin := `which make`
-vendor_build := absolute_path("./.build")
-xcc_prefix := "aarch64-linux-gnu-"
+target_prefix := "aarch64-linux-gnu-"
+output_dir := absolute_path("./.build")
 
 # Delete all built vendor artifacts.
 clean:
-    rm -rf {{vendor_build}}
+    rm -rf {{output_dir}}
 
 # Build U-Boot image and tools.
 build_u-boot:
-    mkdir -p {{vendor_build / "u-boot"}}
-    CROSS_COMPILE={{xcc_prefix}} {{make_bin}} -C ./u-boot O={{vendor_build / "u-boot"}} qemu_arm64_defconfig
-    CROSS_COMPILE={{xcc_prefix}} {{make_bin}} -C ./u-boot O={{vendor_build / "u-boot"}} -j all
+    mkdir -p {{output_dir / "u-boot"}}
+    CROSS_COMPILE={{target_prefix}} {{make_bin}} -C ./u-boot O={{output_dir / "u-boot"}} qemu_arm64_defconfig
+    CROSS_COMPILE={{target_prefix}} {{make_bin}} -C ./u-boot O={{output_dir / "u-boot"}} -j all
