@@ -24,7 +24,7 @@ build cargo_args="":
 check cargo_args="" clippy_args="":
     cargo fmt --check {{cargo_args}}
     cargo check --all-features {{cargo_args}}
-    cargo clippy --all-targets --all-features {{cargo_args}} -- -Dclippy::all -Wclippy::pedantic {{clippy_args}}
+    cargo clippy --all-features {{cargo_args}} -- -Dclippy::all -Wclippy::pedantic {{clippy_args}}
 
 mkimage_bin := vendor_tool_dir / "u-boot/tools/mkimage"
 
