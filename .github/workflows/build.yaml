@@ -44,6 +44,15 @@ jobs:
     - name: Install target architecture binutils
       run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
 
+    - name: Get U-boot commit hash
+      run: git submodule init && echo "U_BOOT_COMMIT_HASH=$(git submodule status | grep u-boot | cut -d ' ' -f 1)" >> $GITHUB_ENV
+
+    - name: Cached U-boot build
+      uses: actions/cache@v4
+      with:
+        path: vendor/.build/u-boot
+        key: u-boot${{ env.U_BOOT_COMMIT_HASH }}
+
     - name: Build kernel image
       run: just make_kernel_image
 
