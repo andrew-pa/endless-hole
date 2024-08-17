@@ -1,0 +1,3 @@
+[submodule "vendor/u-boot"]
+	path = vendor/u-boot
+	url = https://source.denx.de/u-boot/u-boot
