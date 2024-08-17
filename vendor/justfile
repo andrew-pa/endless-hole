@@ -1,0 +1,13 @@
+
+make_bin := `which make`
+vendor_build := absolute_path("./.build")
+
+# Delete all built vendor artifacts.
+clean:
+    rm -rf {{vendor_build}}
+
+# Build U-Boot image and tools.
+build_u-boot:
+    mkdir -p {{vendor_build / "u-boot"}}
+    CROSS_COMPILE=aarch64-linux-gnu- {{make_bin}} -C ./u-boot O={{vendor_build / "u-boot"}} qemu_arm64_defconfig
+    CROSS_COMPILE=aarch64-linux-gnu- {{make_bin}} -C ./u-boot O={{vendor_build / "u-boot"}} -j all
