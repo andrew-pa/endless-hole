@@ -35,6 +35,9 @@ jobs:
         restore-keys: |
           u-boot-
 
+    - name: Install cross compiler
+      run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
     - name: Build u-boot
       run: |
         just vendor::build_u-boot
