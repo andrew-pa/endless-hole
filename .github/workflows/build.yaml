@@ -1,0 +1,51 @@
+name: Build and Upload Images
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+        - '**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Install just
+      uses: extractions/setup-just@v2
+
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Rust toolchain
+      id: setup-rust
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        toolchain: nightly
+        components: rustfmt, clippy
+        targets: aarch64-unknown-none
+
+    - name: Cache Rust dependencies and build intermediates
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ steps.setup-rust.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Lint and check changes
+      run: just check
+
+    - name: Build kernel image
+      run: just make_kernel_image
+
+    - name: Upload image artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: images
+        path: .build/
