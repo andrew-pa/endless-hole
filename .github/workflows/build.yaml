@@ -41,6 +41,9 @@ jobs:
     - name: Lint and check changes
       run: just check
 
+    - name: Install target architecture binutils
+      run: sudo apt-get update && sudo apt-get install -y binutils-aarch64-linux-gnu
+
     - name: Build kernel image
       run: just make_kernel_image
 
