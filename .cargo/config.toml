@@ -1,0 +1,4 @@
+[target.aarch64-unknown-none]
+
+[build]
+target = "aarch64-unknown-none"
