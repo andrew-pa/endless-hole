@@ -1,11 +1,9 @@
-# Tasks for vendored dependencies and tools.
-mod vendor
-
 target_prefix := "aarch64-linux-gnu-"
 build_profile := "debug"
 
-vendor_tool_dir := absolute_path("./vendor/.build/")
-out_dir := absolute_path("./.build")
+out_dir := env("EH_OUTPUT_DIR", absolute_path("./.build"))
+img_dir := out_dir / "image"
+vendor_tool_dir := out_dir / "vendor"
 
 # Choose a task to run.
 default:
@@ -13,7 +11,6 @@ default:
 
 # Delete generated outputs.
 clean:
-    just vendor::clean
     rm -rf {{out_dir}}
 
 # Build Rust crates.
@@ -35,14 +32,14 @@ kernel_load_addr := "41000000"
 make_kernel_image kernel_elf_path=(binary_path / "kernel") mkimage_args="": build
     #!/bin/bash
     set -euxo pipefail
-    mkdir -p {{out_dir}}
-    if [ "{{out_dir / "kernel.img"}}" -nt "{{kernel_elf_path}}" ]; then
+    mkdir -p {{img_dir}}
+    if [ "{{img_dir / "kernel.img"}}" -nt "{{kernel_elf_path}}" ]; then
         echo "kernel image already up-to-date"
         exit 0
     fi
     flat_binary_path=$(mktemp -t kernel.XXXXXX.img)
     {{target_prefix}}objcopy -O binary {{kernel_elf_path}} $flat_binary_path
-    {{mkimage_bin}} -A arm64 -O linux -T kernel -C none -a {{kernel_load_addr}} -e {{kernel_load_addr}} -n "endless-hole-kernel" -d $flat_binary_path {{mkimage_args}} {{out_dir / "kernel.img"}}
+    {{mkimage_bin}} -A arm64 -O linux -T kernel -C none -a {{kernel_load_addr}} -e {{kernel_load_addr}} -n "endless-hole-kernel" -d $flat_binary_path {{mkimage_args}} {{img_dir / "kernel.img"}}
     rm $flat_binary_path
 
 # Run the system in QEMU.
@@ -54,7 +51,7 @@ run-qemu qemu_args="" boot_args="{}": make_kernel_image
         -semihosting \
         -bios {{vendor_tool_dir / "u-boot/u-boot.bin"}} \
         -nographic \
-        -drive if=none,file=fat:rw:{{out_dir}},id=kboot,format=raw \
+        -drive if=none,file=fat:rw:{{img_dir}},id=kboot,format=raw \
         -device nvme,drive=kboot,serial=foo {{qemu_args}} \
     <<-END
         nvme scan
@@ -63,3 +60,10 @@ run-qemu qemu_args="" boot_args="{}": make_kernel_image
         bootm 41000000 - 40000000
     END
 
+make_bin := `which make`
+
+# Build U-Boot image and tools.
+build_u-boot:
+    mkdir -p {{vendor_tool_dir / "u-boot"}}
+    CROSS_COMPILE={{target_prefix}} {{make_bin}} -C ./vendor/u-boot O={{vendor_tool_dir / "u-boot"}} qemu_arm64_defconfig
+    CROSS_COMPILE={{target_prefix}} {{make_bin}} -C ./vendor/u-boot O={{vendor_tool_dir / "u-boot"}} -j all

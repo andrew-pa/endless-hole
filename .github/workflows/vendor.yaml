@@ -4,13 +4,9 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'vendor/u-boot/**'
   pull_request:
     branches:
-      - '**'
-    paths:
-      - 'vendor/u-boot/**'
+      - "**"
 
 jobs:
   build_u-boot:
@@ -34,7 +30,7 @@ jobs:
     - name: Cache u-boot build artifacts
       uses: actions/cache@v4
       with:
-        path: vendor/.build/u-boot
+        path: .build/vendor/u-boot
         key: u-boot-${{ env.U_BOOT_COMMIT_HASH }}
         restore-keys: |
           u-boot-
@@ -44,4 +40,4 @@ jobs:
 
     - name: Build u-boot
       run: |
-        just vendor::build_u-boot
+        just build_u-boot
