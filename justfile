@@ -29,7 +29,7 @@ binary_path := "target/aarch64-unknown-none" / build_profile
 kernel_load_addr := "41000000"
 
 # Create U-boot image for the kernel.
-make_kernel_image kernel_elf_path=(binary_path / "kernel") mkimage_args="": build
+make-kernel-image kernel_elf_path=(binary_path / "kernel") mkimage_args="": build
     #!/bin/bash
     set -euxo pipefail
     mkdir -p {{img_dir}}
@@ -43,7 +43,7 @@ make_kernel_image kernel_elf_path=(binary_path / "kernel") mkimage_args="": buil
     rm $flat_binary_path
 
 # Run the system in QEMU.
-run-qemu qemu_args="" boot_args="{}": make_kernel_image
+run-qemu qemu_args="" boot_args="{}": make-kernel-image
     #!/bin/sh
     set -euxo pipefail
     qemu-system-aarch64 \
