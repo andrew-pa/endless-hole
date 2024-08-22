@@ -48,16 +48,24 @@ jobs:
       run: git submodule init && echo "U_BOOT_COMMIT_HASH=$(git submodule status | grep u-boot | cut -d ' ' -f 1)" >> $GITHUB_ENV
 
     - name: Cached U-boot build
+      id: cache-uboot
       uses: actions/cache@v4
       with:
-        path: vendor/.build/u-boot
+        path: .build/vendor/u-boot
         key: u-boot${{ env.U_BOOT_COMMIT_HASH }}
 
+    - name: Build U-boot
+      if: steps.cache-uboot.outputs.cache-hit != 'true'
+      run: |
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+        git submodule update --init --depth 1 vendor/u-boot
+        just build_u-boot
+
     - name: Build kernel image
-      run: just make_kernel_image
+      run: just make-kernel-image
 
     - name: Upload image artifacts
       uses: actions/upload-artifact@v4
       with:
         name: images
-        path: .build/
+        path: .build/image
