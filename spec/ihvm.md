@@ -49,6 +49,8 @@ Any bits that are not given a value are reserved and should be cleared to 0.
 | `loop`            | `0b000_0111` |
 | `send`            | `0b000_0000` |
 | `copy`            | `0b000_0000` |
+| `transfer_to_shared` | `0b000_0000` |
+| `transfer_from_shared` | `0b000_0000` |
 | `length_of`       | `0b000_0000` |
 | `halt`            | `0b000_0000` |
 | `debug_log`       | `0b000_0000` |
@@ -239,6 +241,50 @@ The `copy` instruction copies some number of bytes between regions, with a sourc
 | `7 : 0`   | Opcode            |
 | `15 : 13` | Source region     |
 | `18 : 16` | Destination region |
+| `23 : 19` | Source offset register |
+| `27 : 24` | Dest. offset register |
+| `31 : 28` | Length register |
+
+## `transfer_to_shared`
+
+The `transfer_to_shared` instruction copies some number of bytes from a region into a shared buffer, with a source and destination offset.
+
+### Parameters
+- Source region where copy will read from
+- Destination shared buffer handle copy will write to, in a register
+- Source offset register relative to the beginning of the region
+- Destination offset register relative to the beginning of the region
+- Register containing the number of bytes to copy starting from the offset, or the length of the copy
+
+### Encoding
+
+| Bit Range | Parameter         |
+|-----------|-------------------|
+| `7 : 0`   | Opcode            |
+| `14 : 12` | Source region     |
+| `18 : 15` | Destination buffer handle register |
+| `23 : 19` | Source offset register |
+| `27 : 24` | Dest. offset register |
+| `31 : 28` | Length register |
+
+## `transfer_from_shared`
+
+The `transfer_from_shared` instruction copies some number of bytes from a shared buffer into a region, with a source and destination offset.
+
+### Parameters
+- Destination region where copy will read from
+- Source shared buffer handle copy will write to, in a register
+- Source offset register relative to the beginning of the region
+- Destination offset register relative to the beginning of the region
+- Register containing the number of bytes to copy starting from the offset, or the length of the copy
+
+### Encoding
+
+| Bit Range | Parameter         |
+|-----------|-------------------|
+| `7 : 0`   | Opcode            |
+| `14 : 12` | Destination region     |
+| `18 : 15` | Source buffer handle register |
 | `23 : 19` | Source offset register |
 | `27 : 24` | Dest. offset register |
 | `31 : 28` | Length register |
