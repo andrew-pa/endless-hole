@@ -65,6 +65,7 @@ The receiver gets a handle that it can pass back to the kernel to request memory
 Receivers can only perform operations that were allowed by the sender of the buffer.
 Receivers can also send a shared buffer to another process by including it in a message.
 Handles, however, are scoped to a single process, so this creates a new handle.
+TODO: can you share the same region of memory with two different processes?
 
 The kernel's own virtual memory is identity mapped to cover the whole range of physical memory.
 
@@ -205,22 +206,46 @@ Only valid if the sender has allowed writes to the buffer.
 |------------|----------------------|----------------------------------|
 | `buffer_handle` | buffer handle   | Handle to the shared buffer to copy into. |
 | `dst_offset` | u64                | Offset into the shared buffer to start writing bytes to. |
-| `src_address` | `*const u8`       | 
+| `src_address` | `*const u8`       | Source address to copy from in the calling process. |
+| `length` | u64                    | Length of the copy in bytes. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
-The `receive` call accepts the following flags:
+The `transfer_to_shared_buffer` call accepts the following flags:
 
 | Name           | Description                              |
 |----------------|------------------------------------------|
-| `Nonblocking`  | Causes the kernel to return the `WouldBlock` error if there are no messages instead of pausing the thread. |
-| `DenyMemoryTransfer` | Causes the kernel to ignore any memory operations contained in the received message. |
 
 #### Errors
-- `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `NotFound`: an unknown buffer handle was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
+- `InvalidLength`: the requested operation would extend past the end of the buffer.
 
+### `transfer_from_shared_buffer`
+Copy bytes from a shared buffer to the caller process.
+Only valid if the sender has allowed reads from the buffer.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `buffer_handle` | buffer handle   | Handle to the shared buffer to copy from. |
+| `src_offset` | u64                | Offset into the shared buffer to start reading bytes from. |
+| `dst_address` | `*const u8`       | Destination address to copy to in the calling process. |
+| `length` | u64                    | Length of the copy in bytes. |
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+
+#### Flags
+The `transfer_from_shared_buffer` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+
+#### Errors
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `NotFound`: an unknown buffer handle was passed.
+- `InvalidPointer`: the message pointer or length pointer was null or invalid.
+- `InvalidLength`: the requested operation would extend past the end of the buffer.
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
@@ -441,7 +466,7 @@ Any other processes which call this function will exit with a fault.*
 Registers a handler program with the kernel to handle when the specified hardware interrupt occurs.
 More than one driver may register for the same interrupt, and all of them will be executed.
 
-Interrupt handler programs are encoded in the Interrupt Handler Virtual Machine (IHVM) bytecode format, described in (`ihvm.md`)[./ihvm.md].
+Interrupt handler programs are encoded in the Interrupt Handler Virtual Machine (IHVM) bytecode format, described in [`ihvm.md`](./ihvm.md).
 If the handler panics, then a message will be sent to the driver containing the handler ID and panic error code.
 
 #### Arguments
