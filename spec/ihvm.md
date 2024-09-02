@@ -49,8 +49,8 @@ Any bits that are not given a value are reserved and should be cleared to 0.
 | `loop`            | `0b000_0111` |
 | `send`            | `0b000_0000` |
 | `copy`            | `0b000_0000` |
-| `transfer_to_shared` | `0b000_0000` |
-| `transfer_from_shared` | `0b000_0000` |
+| `transfer_to_shared_buffer` | `0b000_0000` |
+| `transfer_from_shared_buffer` | `0b000_0000` |
 | `length_of`       | `0b000_0000` |
 | `halt`            | `0b000_0000` |
 | `debug_log`       | `0b000_0000` |
@@ -245,9 +245,9 @@ The `copy` instruction copies some number of bytes between regions, with a sourc
 | `27 : 24` | Dest. offset register |
 | `31 : 28` | Length register |
 
-## `transfer_to_shared`
+## `transfer_to_shared_buffer`
 
-The `transfer_to_shared` instruction copies some number of bytes from a region into a shared buffer, with a source and destination offset.
+The `transfer_to_shared_buffer` instruction copies some number of bytes from a region into a shared buffer, with a source and destination offset.
 
 ### Parameters
 - Source region where copy will read from
@@ -267,9 +267,9 @@ The `transfer_to_shared` instruction copies some number of bytes from a region i
 | `27 : 24` | Dest. offset register |
 | `31 : 28` | Length register |
 
-## `transfer_from_shared`
+## `transfer_from_shared_buffer`
 
-The `transfer_from_shared` instruction copies some number of bytes from a shared buffer into a region, with a source and destination offset.
+The `transfer_from_shared_buffer` instruction copies some number of bytes from a shared buffer into a region, with a source and destination offset.
 
 ### Parameters
 - Destination region where copy will read from
