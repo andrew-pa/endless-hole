@@ -52,6 +52,41 @@ _start:
 halt:
     b halt
 
+.global _secondary_core_start
+
+_secondary_cpu_start:
+    /* context is our stack pointer */
+    mov sp, x0
+
+    /* enable vector instructions */
+    mov x0, 0x300000
+    msr CPACR_EL1, x0
+
+    adr x0, _kernel_page_table_root
+
+    /* set TTLB0/1 to fixed(?) map that sets up the kernel mapping correctly and identity maps the next instructions*/
+    msr TTBR0_EL1, x0
+    msr TTBR1_EL1, x0
+
+    /* set TCR to known correct value 0x0784'8410'3510*/
+    mov x0, #0x3510
+    movk x0, #0x8410, lsl 16
+    movk x0, #0x0784, lsl 32
+    msr TCR_EL1, x0
+
+    /* enable the MMU */
+    mrs x0, SCTLR_EL1
+    orr x0, x0, #1
+    msr SCTLR_EL1, x0
+    isb
+
+    /* jump to the kernel's secondary core init function */
+    adr x3, secondary_core_kmain
+    movk x3, #0xffff, lsl 48
+    br x3
+    /* we cannot come back here, but just in case we do */
+    b halt
+
 .section .data.boot
 
 .global _kernel_page_table_root
