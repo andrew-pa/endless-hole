@@ -3,14 +3,25 @@
 #![no_main]
 #![deny(missing_docs)]
 
-core::arch::global_asm!(include_str!("./start.S"));
+core::arch::global_asm!(include_str!("./platform/start.S"));
+
+mod platform;
+
+use platform::device_tree::DeviceTree;
 
 /// The main entry point for the kernel.
 ///
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
 /// The device tree blob is provided by U-Boot, see `u-boot/arch/arm/lib/bootm.c:boot_jump_linux(...)`.
 #[no_mangle]
-pub extern "C" fn kmain(_device_tree_blob: *mut ()) -> ! {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn kmain(device_tree_blob: *mut u8) -> ! {
+    unsafe {
+        platform::bss::zero_bss_section();
+    }
+
+    let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob) };
+
     #[allow(clippy::empty_loop)]
     loop {}
 }
