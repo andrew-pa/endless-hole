@@ -37,9 +37,12 @@ _start:
     msr SCTLR_EL1, x1
     isb
 
-    /* fix stack pointer */
-    movz x1, #0xffff, lsl 48
-    add sp, sp, x1
+    /* setup stack pointer */
+    /* the stack is >1MB away, so we need to load the page address first */
+    adrp x1, __stack_start
+    add x1, x1, :lo12:__stack_start
+    movk x1, #0xffff, lsl 48 /* adjust for virtual addressing */
+    mov sp, x1
 
     /* start the kernel, now running in the correct spot in virtual memory */
     adr x1, kmain
