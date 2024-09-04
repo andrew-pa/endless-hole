@@ -13,6 +13,7 @@
 use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
+use itertools::Itertools as _;
 
 /// The magic value expected in the device tree header.
 const EXPECTED_MAGIC: u32 = 0xd00d_feed;
@@ -135,22 +136,70 @@ pub enum Value<'dt> {
 
 impl<'dt> Value<'dt> {
     /// Parse bytes into a value based on the name and expected type.
-    fn parse(name: &str, bytes: &'dt [u8]) -> Value<'dt> {
+    fn parse(name: &[u8], bytes: &'dt [u8]) -> Value<'dt> {
         // See Devicetree Specification section 2.3
         match name {
-            "compatible" => Value::Strings(StringList {
+            b"compatible" => Value::Strings(StringList {
                 data: bytes,
                 current_offset: 0,
             }),
-            "model" | "status" => match CStr::from_bytes_until_nul(bytes) {
+            b"model" | b"status" => match CStr::from_bytes_until_nul(bytes) {
                 Ok(s) => Value::String(s),
                 Err(_) => Value::Bytes(bytes),
             },
-            "phandle" => Value::Phandle(BigEndian::read_u32(bytes)),
-            "#address-cells" | "#size-cells" | "virtual-reg" => {
+            b"phandle" => Value::Phandle(BigEndian::read_u32(bytes)),
+            b"#address-cells" | b"#size-cells" | b"virtual-reg" => {
                 Value::U32(BigEndian::read_u32(bytes))
             }
             _ => Value::Bytes(bytes),
+        }
+    }
+
+    pub fn into_u32(self) -> Option<u32> {
+        if let Self::U32(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_u64(self) -> Option<u64> {
+        if let Self::U64(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_phandle(self) -> Option<u32> {
+        if let Self::Phandle(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_string(self) -> Option<&'dt CStr> {
+        if let Self::String(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_strings(self) -> Option<StringList<'dt>> {
+        if let Self::Strings(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    pub fn into_bytes(self) -> Option<&'dt [u8]> {
+        if let Self::Bytes(v) = self {
+            Some(v)
+        } else {
+            None
         }
     }
 }
@@ -159,13 +208,13 @@ impl<'dt> Value<'dt> {
 #[derive(Debug)]
 pub enum StructureItem<'dt> {
     /// The beginning of a node in the tree, with a particular name.
-    StartNode(&'dt str),
+    StartNode(&'dt [u8]),
     /// The end of a node in the tree.
     EndNode,
     /// A property attached to some node.
     Property {
         /// The name of the property.
-        name: &'dt str,
+        name: &'dt [u8],
         /// The value associated with this property.
         data: &'dt [u8],
     },
@@ -251,15 +300,102 @@ impl DeviceTree<'_> {
         }
     }
 
-    /// Find a property in the tree by path, if it is present.
-    pub fn find_property(&self, path: &str) -> Option<Value> {
-        if path.is_empty() || path.starts_with('/') {
+    pub fn iter_node_properties(
+        &self,
+        path: &[u8],
+    ) -> Option<impl Iterator<Item = (&[u8], Value)>> {
+        struct Iter<'a> {
+            cur: Cursor<'a>,
+            depth: usize,
+        }
+
+        impl<'a> Iterator for Iter<'a> {
+            type Item = (&'a [u8], Value<'a>);
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.depth == 0 {
+                    return None;
+                }
+                while let Some(item) = self.cur.next() {
+                    match item {
+                        StructureItem::StartNode(_) => {
+                            // Increment depth if we enter another node
+                            self.depth += 1;
+                        }
+                        StructureItem::EndNode => {
+                            // Decrement depth and stop if we've left the target node
+                            self.depth -= 1;
+                            if self.depth == 0 {
+                                return None; // We're done once we exit the target node
+                            }
+                        }
+                        StructureItem::Property { name, data } => {
+                            if self.depth == 1 {
+                                // We're in the target node; yield the property
+                                return Some((name, Value::parse(name, data)));
+                            }
+                        }
+                    }
+                }
+                None
+            }
+        }
+
+        if path.is_empty() || path[0] == b'/' {
             return None;
         }
         let mut index = 1;
         let mut cur = self.iter_structure();
         while let Some(item) = cur.next() {
-            if index > path.len() {
+            match item {
+                StructureItem::StartNode(name) => {
+                    if path[index..].starts_with(name)
+                        && path.len() < index + name.len()
+                        && path[index + name.len()] == b'/'
+                    {
+                        // enter the node and move to finding the next component in the path
+                        index += name.len() + 1;
+
+                        if index >= path.len() {
+                            return Some(Iter { cur, depth: 1 });
+                        }
+                    } else {
+                        // skip this node and all of its children
+                        let mut depth = 1;
+                        for item in cur.by_ref() {
+                            match item {
+                                StructureItem::EndNode => depth -= 1,
+                                StructureItem::StartNode(_) => depth += 1,
+                                StructureItem::Property { .. } => {}
+                            }
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                    }
+                }
+                StructureItem::EndNode => {
+                    index = path[1..index]
+                        .iter()
+                        .rev()
+                        .find_position(|b| **b == b'/')?
+                        .0;
+                }
+                StructureItem::Property { .. } => {}
+            }
+        }
+        None
+    }
+
+    /// Find a property in the tree by path, if it is present.
+    pub fn find_property(&self, path: &[u8]) -> Option<Value> {
+        if path.is_empty() || path[0] == b'/' {
+            return None;
+        }
+        let mut index = 1;
+        let mut cur = self.iter_structure();
+        while let Some(item) = cur.next() {
+            if index >= path.len() {
                 break;
             }
 
@@ -267,7 +403,7 @@ impl DeviceTree<'_> {
                 StructureItem::StartNode(name) => {
                     if path[index..].starts_with(name)
                         && path.len() < index + name.len()
-                        && path[index + name.len()..].starts_with('/')
+                        && path[index + name.len()] == b'/'
                     {
                         // enter the node and move to finding the next component in the path
                         index += name.len() + 1;
@@ -287,7 +423,11 @@ impl DeviceTree<'_> {
                     }
                 }
                 StructureItem::EndNode => {
-                    index = path[1..index].rfind('/')?;
+                    index = path[1..index]
+                        .iter()
+                        .rev()
+                        .find_position(|b| **b == b'/')?
+                        .0;
                 }
                 StructureItem::Property { name, data } => {
                     if &path[index..] == name {
@@ -337,9 +477,7 @@ impl<'dt> Iterator for Cursor<'dt> {
                     while self.dt.structure.get(name_end).map_or(false, |b| *b != 0) {
                         name_end += 1;
                     }
-                    let name =
-                        core::str::from_utf8(&self.dt.structure[self.current_offset..name_end])
-                            .expect("device tree node name is utf8");
+                    let name = &self.dt.structure[self.current_offset..name_end];
                     self.current_offset = pad_end_4b(name_end + 1);
                     return Some(StructureItem::StartNode(name));
                 }
@@ -355,8 +493,7 @@ impl<'dt> Iterator for Cursor<'dt> {
                     while self.dt.strings.get(name_end).map_or(false, |b| *b != 0) {
                         name_end += 1;
                     }
-                    let name = core::str::from_utf8(&self.dt.strings[name_offset..name_end])
-                        .expect("device tree node name is utf8");
+                    let name = &self.dt.strings[name_offset..name_end];
                     let data =
                         &self.dt.structure[self.current_offset..(self.current_offset + length)];
                     self.current_offset += pad_end_4b(length);
