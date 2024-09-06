@@ -13,7 +13,7 @@
 use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
-use itertools::Itertools as _;
+use itertools::Itertools;
 
 /// The magic value expected in the device tree header.
 const EXPECTED_MAGIC: u32 = 0xd00d_feed;
@@ -139,10 +139,7 @@ impl<'dt> Value<'dt> {
     fn parse(name: &[u8], bytes: &'dt [u8]) -> Value<'dt> {
         // See Devicetree Specification section 2.3
         match name {
-            b"compatible" => Value::Strings(StringList {
-                data: bytes,
-                current_offset: 0,
-            }),
+            b"compatible" => Value::Strings(StringList { data: bytes }),
             b"model" | b"status" => match CStr::from_bytes_until_nul(bytes) {
                 Ok(s) => Value::String(s),
                 Err(_) => Value::Bytes(bytes),
@@ -221,7 +218,7 @@ pub enum StructureItem<'dt> {
 }
 
 /// A cursor through the device tree.
-pub struct Cursor<'dt> {
+pub struct StructuralItemIter<'dt> {
     dt: &'dt DeviceTree<'dt>,
     current_offset: usize,
 }
@@ -235,8 +232,7 @@ pub struct MemRegionIter<'dt> {
 /// A list of strings in the blob.
 #[derive(Clone)]
 pub struct StringList<'dt> {
-    data: &'dt [u8],
-    current_offset: usize,
+    pub data: &'dt [u8],
 }
 
 // most of the time we really just want to know a single property or iterate over the properties at
@@ -293,19 +289,20 @@ impl DeviceTree<'_> {
     }
 
     /// Iterate over the tree structure.
-    pub fn iter_structure(&self) -> Cursor {
-        Cursor {
+    pub fn iter_structure(&self) -> StructuralItemIter {
+        StructuralItemIter {
             current_offset: 0,
             dt: self,
         }
     }
 
+    /// Iterate over the properties of a node in the tree given the path.
     pub fn iter_node_properties(
         &self,
         path: &[u8],
     ) -> Option<impl Iterator<Item = (&[u8], Value)>> {
         struct Iter<'a> {
-            cur: Cursor<'a>,
+            cur: StructuralItemIter<'a>,
             depth: usize,
         }
 
@@ -316,7 +313,7 @@ impl DeviceTree<'_> {
                 if self.depth == 0 {
                     return None;
                 }
-                while let Some(item) = self.cur.next() {
+                for item in self.cur.by_ref() {
                     match item {
                         StructureItem::StartNode(_) => {
                             // Increment depth if we enter another node
@@ -341,7 +338,7 @@ impl DeviceTree<'_> {
             }
         }
 
-        if path.is_empty() || path[0] == b'/' {
+        if path.is_empty() || path[0] != b'/' {
             return None;
         }
         let mut index = 1;
@@ -389,54 +386,12 @@ impl DeviceTree<'_> {
 
     /// Find a property in the tree by path, if it is present.
     pub fn find_property(&self, path: &[u8]) -> Option<Value> {
-        if path.is_empty() || path[0] == b'/' {
-            return None;
-        }
-        let mut index = 1;
-        let mut cur = self.iter_structure();
-        while let Some(item) = cur.next() {
-            if index >= path.len() {
-                break;
-            }
+        let split = path.iter().rev().find_position(|p| **p == b'/')?.0;
+        let (node_path, property_name) = path.split_at(split);
 
-            match item {
-                StructureItem::StartNode(name) => {
-                    if path[index..].starts_with(name)
-                        && path.len() < index + name.len()
-                        && path[index + name.len()] == b'/'
-                    {
-                        // enter the node and move to finding the next component in the path
-                        index += name.len() + 1;
-                    } else {
-                        // skip this node and all of its children
-                        let mut depth = 1;
-                        for item in cur.by_ref() {
-                            match item {
-                                StructureItem::EndNode => depth -= 1,
-                                StructureItem::StartNode(_) => depth += 1,
-                                StructureItem::Property { .. } => {}
-                            }
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                    }
-                }
-                StructureItem::EndNode => {
-                    index = path[1..index]
-                        .iter()
-                        .rev()
-                        .find_position(|b| **b == b'/')?
-                        .0;
-                }
-                StructureItem::Property { name, data } => {
-                    if &path[index..] == name {
-                        return Some(Value::parse(name, data));
-                    }
-                }
-            }
-        }
-        None
+        self.iter_node_properties(node_path)?
+            .find(|(name, _)| *name == property_name)
+            .map(|(_, value)| value)
     }
 
     /// Iterate over the system reserved memory regions.
@@ -463,7 +418,7 @@ fn pad_end_4b(num_bytes: usize) -> usize {
         }
 }
 
-impl<'dt> Iterator for Cursor<'dt> {
+impl<'dt> Iterator for StructuralItemIter<'dt> {
     type Item = StructureItem<'dt>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -533,26 +488,46 @@ impl<'dt> Iterator for MemRegionIter<'dt> {
     }
 }
 
-impl<'dt> Iterator for StringList<'dt> {
-    type Item = &'dt CStr;
+impl<'dt> StringList<'dt> {
+    /// Determine if the byte sequence `s` is in the list of strings.
+    pub fn contains(&self, s: &[u8]) -> bool {
+        self.data.windows(s.len()).any(|w| w == s)
+    }
 
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.current_offset >= self.data.len() {
-            None
-        } else {
-            match CStr::from_bytes_until_nul(&self.data[self.current_offset..]) {
-                Ok(s) => {
-                    self.current_offset += s.to_bytes_with_nul().len();
-                    Some(s)
+    /// Iterate over the strings present in the list as C strings.
+    pub fn iter(&self) -> impl Iterator<Item = &'dt CStr> {
+        struct Iter<'dt> {
+            data: &'dt [u8],
+            current_offset: usize,
+        }
+
+        impl<'dt> Iterator for Iter<'dt> {
+            type Item = &'dt CStr;
+
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.current_offset >= self.data.len() {
+                    None
+                } else {
+                    match CStr::from_bytes_until_nul(&self.data[self.current_offset..]) {
+                        Ok(s) => {
+                            self.current_offset += s.to_bytes_with_nul().len();
+                            Some(s)
+                        }
+                        Err(_) => None,
+                    }
                 }
-                Err(_) => None,
             }
+        }
+
+        Iter {
+            data: self.data,
+            current_offset: 0,
         }
     }
 }
 
 impl<'dt> core::fmt::Debug for StringList<'dt> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_list().entries(self.clone()).finish()
+        f.debug_list().entries(self.iter()).finish()
     }
 }

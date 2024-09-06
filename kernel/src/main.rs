@@ -22,6 +22,19 @@ pub extern "C" fn kmain(device_tree_blob: *mut u8) -> ! {
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob) };
 
+    let stdout_device_name = device_tree
+        .find_property(b"/chosen/stdout-path")
+        .and_then(platform::device_tree::Value::into_bytes)
+        // TODO: default to QEMU virt board UART for now, should be platform default
+        .unwrap_or(b"/pl011@9000000");
+
+    // TODO: for now we assume that this device is a UART
+    let stdout_uart_register_props = device_tree
+        .iter_node_properties(stdout_device_name)
+        .expect("debug stdout device tree node")
+        .find_map(|p| (p.0 == b"reg").then_some(p.1))
+        .expect("debug UART device has `reg` property");
+
     #[allow(clippy::empty_loop)]
     loop {}
 }
