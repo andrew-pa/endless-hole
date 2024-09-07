@@ -70,7 +70,7 @@ pub enum Value<'dt> {
     /// A single printable string.
     String(&'dt CStr),
     /// A list of strings.
-    Strings(StringList<'dt>),
+    StringList(StringList<'dt>),
     /// A blob of bytes. This means the property has a device specific format.
     Bytes(&'dt [u8]),
 }
@@ -80,7 +80,7 @@ impl<'dt> Value<'dt> {
     fn parse(name: &[u8], bytes: &'dt [u8]) -> Value<'dt> {
         // See Devicetree Specification section 2.3
         match name {
-            b"compatible" => Value::Strings(StringList { data: bytes }),
+            b"compatible" => Value::StringList(StringList { data: bytes }),
             b"model" | b"status" => match CStr::from_bytes_until_nul(bytes) {
                 Ok(s) => Value::String(s),
                 Err(_) => Value::Bytes(bytes),
@@ -136,7 +136,7 @@ impl<'dt> Value<'dt> {
     /// If the value is of type `stringlist`, extract the value as [`StringList`].
     #[must_use]
     pub fn into_strings(self) -> Option<StringList<'dt>> {
-        if let Self::Strings(v) = self {
+        if let Self::StringList(v) = self {
             Some(v)
         } else {
             None
@@ -200,26 +200,25 @@ impl DeviceTree<'_> {
             "buffer incorrect size according to header"
         );
         // log::debug!("device tree at {:x}, header={:?}", addr as usize, header);
+        let str_start = header.off_dt_strings() as usize;
+        let str_end = str_start + header.size_dt_strings() as usize;
+        let structs_start = header.off_dt_struct() as usize;
+        let structs_end = str_start + header.size_dt_structs() as usize;
         DeviceTree {
             header,
-            strings: &buf[header.off_dt_strings() as usize..header.size_dt_strings() as usize],
-            structure: &buf[header.off_dt_struct() as usize..header.size_dt_structs() as usize],
-            mem_map: &buf[header.off_mem_rsvmap() as usize..header.size_dt_structs() as usize],
+            strings: &buf[str_start..str_end],
+            structure: &buf[structs_start..structs_end],
+            mem_map: &buf[header.off_mem_rsvmap() as usize..header.off_dt_struct() as usize],
         }
     }
 
     /// Get the header for the blob.
-    fn header(&self) -> fdt::BlobHeader {
+    #[must_use]
+    pub fn header(&self) -> fdt::BlobHeader {
         self.header
     }
 
-    /// Returns the total size of the blob in bytes.
-    #[must_use]
-    pub fn size_of_blob(&self) -> usize {
-        self.header().total_size() as usize
-    }
-
-    /// Iterate over the tree structure.
+    /// Iterate over the raw flattened tree blob structure.
     #[must_use]
     pub fn iter_structure(&self) -> iter::FlattenedTreeIter {
         iter::FlattenedTreeIter {
@@ -228,32 +227,33 @@ impl DeviceTree<'_> {
         }
     }
 
-    /// Iterate over the properties of a node in the tree given the path.
+    /// Iterate over the properties of a node in the tree given the path, if present.
     #[must_use]
     pub fn iter_node_properties(&self, path: &[u8]) -> Option<iter::NodePropertyIter> {
-        if path.is_empty() || path[0] != b'/' {
-            return None;
-        }
-        let mut index = 1;
-        let mut cur = self.iter_structure();
-        while let Some(item) = cur.next() {
-            match item {
+        let mut segments = path.split(|p| *p == b'/');
+        let mut looking_for = segments.next()?;
+        let mut tokens = self.iter_structure();
+        while let Some(token) = tokens.next() {
+            match token {
                 fdt::Token::StartNode(name) => {
-                    if path[index..].starts_with(name)
-                        && path.len() < index + name.len()
-                        && path[index + name.len()] == b'/'
-                    {
-                        // enter the node and move to finding the next component in the path
-                        index += name.len() + 1;
-
-                        if index >= path.len() {
-                            return Some(NodePropertyIter { cur, depth: 1 });
+                    if name == looking_for {
+                        // enter the node
+                        match segments.next() {
+                            None | Some(&[]) => {
+                                return Some(iter::NodePropertyIter {
+                                    cur: tokens,
+                                    depth: 1,
+                                })
+                            }
+                            Some(next_segment) => {
+                                looking_for = next_segment;
+                            }
                         }
                     } else {
                         // skip this node and all of its children
                         let mut depth = 1;
-                        for item in cur.by_ref() {
-                            match item {
+                        for token in tokens.by_ref() {
+                            match token {
                                 fdt::Token::EndNode => depth -= 1,
                                 fdt::Token::StartNode(_) => depth += 1,
                                 fdt::Token::Property { .. } => {}
@@ -264,13 +264,7 @@ impl DeviceTree<'_> {
                         }
                     }
                 }
-                fdt::Token::EndNode => {
-                    index = path[1..index]
-                        .iter()
-                        .rev()
-                        .find_position(|b| **b == b'/')?
-                        .0;
-                }
+                fdt::Token::EndNode => return None,
                 fdt::Token::Property { .. } => {}
             }
         }
@@ -281,7 +275,7 @@ impl DeviceTree<'_> {
     #[must_use]
     pub fn find_property(&self, path: &[u8]) -> Option<Value> {
         let split = path.iter().rev().find_position(|p| **p == b'/')?.0;
-        let (node_path, property_name) = path.split_at(split);
+        let (node_path, property_name) = path.split_at(path.len() - split);
 
         self.iter_node_properties(node_path)?
             .find(|(name, _)| *name == property_name)
@@ -302,4 +296,55 @@ impl DeviceTree<'_> {
     //     }
     //     log::debug!("-----------");
     // }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// This test tree blob was generated using QEMU:
+    /// ```bash
+    /// $ qemu-system-aarch64 -machine virt,dumpdtb=kernel_core/src/platform/device_tree/test-tree.fdt
+    /// ```
+    const TEST_TREE_BLOB: &[u8] = include_bytes!("test-tree.fdt");
+
+    fn test_tree() -> DeviceTree<'static> {
+        DeviceTree::from_bytes(TEST_TREE_BLOB)
+    }
+
+    #[test]
+    fn find_property_at_root() {
+        let tree = test_tree();
+        match tree.find_property(b"/compatible") {
+            Some(Value::StringList(ss)) => {
+                assert!(ss.contains(b"linux,dummy-virt"));
+            }
+            c => panic!("unexpected value for /compatible: {:?}", c),
+        }
+    }
+
+    #[test]
+    fn find_property_in_child_of_root() {
+        let tree = test_tree();
+        match tree.find_property(b"/timer/compatible") {
+            Some(Value::StringList(ss)) => {
+                assert!(ss.contains(b"arm,armv7-timer"));
+            }
+            c => panic!("unexpected value for /compatible: {:?}", c),
+        }
+    }
+
+    #[test]
+    fn find_property_in_nested_child() {
+        let tree = test_tree();
+        match tree.find_property(b"/intc@8000000/v2m@8020000/phandle") {
+            Some(Value::Phandle(v)) => {
+                assert_eq!(v, 0x8003);
+            }
+            c => panic!(
+                "unexpected value for /intc@8000000/v2m@8020000/phandle: {:?}",
+                c
+            ),
+        }
+    }
 }
