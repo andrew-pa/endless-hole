@@ -9,8 +9,14 @@
 core::arch::global_asm!(core::include_str!("./start.S"));
 
 mod bss;
+mod uart;
 
-use kernel_core::platform::device_tree::{DeviceTree, Value as DTValue};
+use core::fmt::Write as _;
+
+use kernel_core::platform::{
+    device_tree::{DeviceTree, Value as DTValue},
+    PhysicalPointer,
+};
 
 /// The main entry point for the kernel.
 ///
@@ -22,25 +28,24 @@ use kernel_core::platform::device_tree::{DeviceTree, Value as DTValue};
 /// If something goes wrong during the boot process that is unrecoverable, a panic will occur.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn kmain(device_tree_blob: *mut u8) -> ! {
+pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     unsafe {
         bss::zero_bss_section();
     }
 
-    let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob) };
+    let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
 
-    let stdout_device_name = device_tree
+    let stdout_device_path = device_tree
         .find_property(b"/chosen/stdout-path")
         .and_then(DTValue::into_bytes)
+        // the string is null terminated in the device tree
         // TODO: default to QEMU virt board UART for now, should be platform default
-        .unwrap_or(b"/pl011@9000000");
+        .map_or(b"/pl011@9000000" as &[u8], |p| &p[0..p.len() - 1]);
 
-    // TODO: for now we assume that this device is a UART
-    let stdout_uart_register_props = device_tree
-        .iter_node_properties(stdout_device_name)
-        .expect("debug stdout device tree node")
-        .find_map(|p| (p.0 == b"reg").then_some(p.1))
-        .expect("debug UART device has `reg` property");
+    let mut uart =
+        uart::PL011::from_device_tree(&device_tree, stdout_device_path).expect("init UART");
+
+    writeln!(&mut uart, "Hello, world!").unwrap();
 
     #[allow(clippy::empty_loop)]
     loop {}
@@ -57,7 +62,11 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 
 /// The kernel-wide panic handler.
 #[panic_handler]
-pub fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    let mut uart = uart::PL011::from_platform_debug_best_guess();
+
+    writeln!(&mut uart, "\x1b[31mpanic!\x1b[0m {info}").unwrap();
+
     #[allow(clippy::empty_loop)]
     loop {}
 }

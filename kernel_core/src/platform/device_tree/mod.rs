@@ -258,7 +258,7 @@ impl DeviceTree<'_> {
         let str_start = header.off_dt_strings() as usize;
         let str_end = str_start + header.size_dt_strings() as usize;
         let structs_start = header.off_dt_struct() as usize;
-        let structs_end = str_start + header.size_dt_structs() as usize;
+        let structs_end = structs_start + header.size_dt_structs() as usize;
 
         DeviceTree {
             header,
