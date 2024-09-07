@@ -15,6 +15,10 @@ use kernel_core::platform::device_tree::{DeviceTree, Value as DTValue};
 ///
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
 /// The device tree blob is provided by U-Boot, see `u-boot/arch/arm/lib/bootm.c:boot_jump_linux(...)`.
+///
+/// # Panics
+///
+/// If something goes wrong during the boot process that is unrecoverable, a panic will occur.
 #[no_mangle]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn kmain(device_tree_blob: *mut u8) -> ! {
