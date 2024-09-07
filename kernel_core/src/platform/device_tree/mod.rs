@@ -28,16 +28,26 @@ pub struct StringList<'dt> {
 
 impl<'dt> StringList<'dt> {
     /// Determine if the byte sequence `s` is in the list of strings.
+    #[must_use]
     pub fn contains(&self, s: &[u8]) -> bool {
         self.data.windows(s.len()).any(|w| w == s)
     }
 
     /// Iterate over the strings present in the list as C strings.
+    #[must_use]
     pub fn iter(&self) -> iter::StringListIter {
         iter::StringListIter {
             data: self.data,
             current_offset: 0,
         }
+    }
+}
+
+impl<'a: 'dt, 'dt> IntoIterator for &'a StringList<'dt> {
+    type IntoIter = iter::StringListIter<'dt>;
+    type Item = &'dt core::ffi::CStr;
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -84,6 +94,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is of type `u32`, extract the value as a Rust `u32`.
+    #[must_use]
     pub fn into_u32(self) -> Option<u32> {
         if let Self::U32(v) = self {
             Some(v)
@@ -93,6 +104,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is of type `u64`, extract the value as a Rust `u64`.
+    #[must_use]
     pub fn into_u64(self) -> Option<u64> {
         if let Self::U64(v) = self {
             Some(v)
@@ -102,6 +114,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is of type `phandle`, extract the value as a Rust `u32`.
+    #[must_use]
     pub fn into_phandle(self) -> Option<u32> {
         if let Self::Phandle(v) = self {
             Some(v)
@@ -111,6 +124,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is of type `string`, extract the value as a Rust [`CStr`].
+    #[must_use]
     pub fn into_string(self) -> Option<&'dt CStr> {
         if let Self::String(v) = self {
             Some(v)
@@ -120,6 +134,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is of type `stringlist`, extract the value as [`StringList`].
+    #[must_use]
     pub fn into_strings(self) -> Option<StringList<'dt>> {
         if let Self::Strings(v) = self {
             Some(v)
@@ -129,6 +144,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is unparsed, extract the value as a Rust `&[u8]`, returning the raw bytes.
+    #[must_use]
     pub fn into_bytes(self) -> Option<&'dt [u8]> {
         if let Self::Bytes(v) = self {
             Some(v)
@@ -164,7 +180,13 @@ impl DeviceTree<'_> {
 
     /// Create a [`DeviceTree`] that parses the blob present in `buf`.
     ///
-    /// The buffer must be the same length as it claims in the blob header, or this function will panic.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the header present in `buf` is incorrect, in particular if:
+    /// - the magic value is incorrect.
+    /// - the total length reported in the header does not match the length of the slice.
+    #[must_use]
     pub fn from_bytes(buf: &[u8]) -> DeviceTree {
         let header = fdt::BlobHeader { buf };
         assert_eq!(
@@ -192,11 +214,13 @@ impl DeviceTree<'_> {
     }
 
     /// Returns the total size of the blob in bytes.
+    #[must_use]
     pub fn size_of_blob(&self) -> usize {
         self.header().total_size() as usize
     }
 
     /// Iterate over the tree structure.
+    #[must_use]
     pub fn iter_structure(&self) -> iter::FlattenedTreeIter {
         iter::FlattenedTreeIter {
             current_offset: 0,
@@ -205,6 +229,7 @@ impl DeviceTree<'_> {
     }
 
     /// Iterate over the properties of a node in the tree given the path.
+    #[must_use]
     pub fn iter_node_properties(&self, path: &[u8]) -> Option<iter::NodePropertyIter> {
         if path.is_empty() || path[0] != b'/' {
             return None;
@@ -253,6 +278,7 @@ impl DeviceTree<'_> {
     }
 
     /// Find a property in the tree by path, if it is present.
+    #[must_use]
     pub fn find_property(&self, path: &[u8]) -> Option<Value> {
         let split = path.iter().rev().find_position(|p| **p == b'/')?.0;
         let (node_path, property_name) = path.split_at(split);
@@ -263,6 +289,7 @@ impl DeviceTree<'_> {
     }
 
     /// Iterate over the system reserved memory regions.
+    #[must_use]
     pub fn iter_reserved_memory_regions(&self) -> iter::MemRegionIter {
         iter::MemRegionIter::for_data(self.mem_map)
     }

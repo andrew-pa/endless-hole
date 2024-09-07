@@ -46,42 +46,52 @@ pub struct BlobHeader<'a> {
 
 impl<'a> BlobHeader<'a> {
     /// Magic number. Should equal [`EXPECTED_MAGIC`].
+    #[must_use]
     pub fn magic(&self) -> u32 {
         BigEndian::read_u32(&self.buf[0..])
     }
     /// Total size of the blob.
+    #[must_use]
     pub fn total_size(&self) -> u32 {
         BigEndian::read_u32(&self.buf[4..])
     }
     /// Offset to the structs region of the blob.
+    #[must_use]
     pub fn off_dt_struct(&self) -> u32 {
         BigEndian::read_u32(&self.buf[8..])
     }
     /// Offset to the strings region of the blob.
+    #[must_use]
     pub fn off_dt_strings(&self) -> u32 {
         BigEndian::read_u32(&self.buf[12..])
     }
     /// Offset to the memory reservation block.
+    #[must_use]
     pub fn off_mem_rsvmap(&self) -> u32 {
         BigEndian::read_u32(&self.buf[16..])
     }
     /// Blob version code.
+    #[must_use]
     pub fn version(&self) -> u32 {
         BigEndian::read_u32(&self.buf[20..])
     }
     /// Last compatible version this device tree is compatible with.
+    #[must_use]
     pub fn last_comp_version(&self) -> u32 {
         BigEndian::read_u32(&self.buf[24..])
     }
     /// Physical ID of the boot CPU.
+    #[must_use]
     pub fn boot_cpuid_phys(&self) -> u32 {
         BigEndian::read_u32(&self.buf[28..])
     }
     /// Size of the strings region of the blob.
+    #[must_use]
     pub fn size_dt_strings(&self) -> u32 {
         BigEndian::read_u32(&self.buf[32..])
     }
     /// Size of the structs region of the blob.
+    #[must_use]
     pub fn size_dt_structs(&self) -> u32 {
         BigEndian::read_u32(&self.buf[36..])
     }

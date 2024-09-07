@@ -17,6 +17,7 @@ pub unsafe fn zero_bss_section() {
 
     let bss_start = addr_of_mut!(__bss_start);
     let bss_end = addr_of_mut!(__bss_end);
+    #[allow(clippy::cast_sign_loss)]
     let bss_size = bss_end.offset_from(bss_start) as usize;
     write_bytes(bss_start, 0, bss_size);
 }

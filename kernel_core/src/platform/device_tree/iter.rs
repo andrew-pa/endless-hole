@@ -1,4 +1,5 @@
 //! Device Tree iterators.
+#![allow(clippy::module_name_repetitions)]
 use core::ffi::CStr;
 
 use byteorder::{BigEndian, ByteOrder as _};
@@ -72,6 +73,7 @@ pub struct MemRegionIter<'dt> {
 
 impl<'dt> MemRegionIter<'dt> {
     /// Creates a memory region iterator for the data of an arbitrary property.
+    #[must_use]
     pub fn for_data(data: &'dt [u8]) -> Self {
         Self {
             data,
