@@ -1,3 +1,5 @@
+//! BSS section initializer.
+
 // these are defined by the linker script so we know where the BSS section is
 // notably not the value but the *address* of these symbols is what is relevant
 extern "C" {

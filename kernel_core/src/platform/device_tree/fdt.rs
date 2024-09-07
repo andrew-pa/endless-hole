@@ -2,9 +2,6 @@
 
 use byteorder::{BigEndian, ByteOrder as _};
 
-/// The magic value expected in the device tree header.
-pub const EXPECTED_MAGIC: u32 = 0xd00d_feed;
-
 /// Values used to delimit structure in the flattened device tree.
 ///
 /// Defined in Section 5.4.1 of the specification.
@@ -44,8 +41,13 @@ pub struct BlobHeader<'a> {
     pub buf: &'a [u8],
 }
 
+/// Total size of a header in bytes.
+pub const HEADER_SIZE: usize = 10 * 4;
+/// The magic value expected in the device tree header.
+pub const HEADER_EXPECTED_MAGIC: u32 = 0xd00d_feed;
+
 impl<'a> BlobHeader<'a> {
-    /// Magic number. Should equal [`EXPECTED_MAGIC`].
+    /// Magic number. Should equal [`HEADER_EXPECTED_MAGIC`].
     #[must_use]
     pub fn magic(&self) -> u32 {
         BigEndian::read_u32(&self.buf[0..])

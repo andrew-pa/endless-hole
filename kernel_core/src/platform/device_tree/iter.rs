@@ -98,7 +98,7 @@ impl<'dt> Iterator for MemRegionIter<'dt> {
     }
 }
 
-/// Iterator over strings in a [`StringList`].
+/// Iterator over strings in a [`super::StringList`].
 pub struct StringListIter<'dt> {
     pub(super) data: &'dt [u8],
     pub(super) current_offset: usize,
@@ -128,6 +128,20 @@ pub struct NodePropertyIter<'a> {
     pub(super) depth: usize,
     pub(super) parent_address_cells: u32,
     pub(super) parent_size_cells: u32,
+}
+
+impl NodePropertyIter<'_> {
+    /// Get the `#address-cells` property defined by the parent of this node.
+    #[must_use]
+    pub fn parent_address_cells(&self) -> u32 {
+        self.parent_address_cells
+    }
+
+    /// Get the `#size-cells` property defined by the parent of this node.
+    #[must_use]
+    pub fn parent_size_cells(&self) -> u32 {
+        self.parent_size_cells
+    }
 }
 
 impl<'a> Iterator for NodePropertyIter<'a> {
@@ -171,6 +185,7 @@ impl<'a> Iterator for NodePropertyIter<'a> {
 }
 
 /// An iterator over the (address, length) pairs contained in this array of device register regions.
+/// Constructed by a [`super::Registers`].
 pub struct RegistersIter<'a, 'dt> {
     pub(super) regs: &'a Registers<'dt>,
     pub(super) offset: usize,

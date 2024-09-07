@@ -1,7 +1,7 @@
-//! Device Tree blob.
+//! Devicetree blob parser.
 //!
 //! Parser/search routines for the
-//! [DeviceTree Specification](https://github.com/devicetree-org/devicetree-specification)
+//! [Devicetree Specification](https://github.com/devicetree-org/devicetree-specification)
 //! to obtain hardware/boot parameters.
 //!
 //! This is designed to require no allocation/copying so that it can be used as soon as possible
@@ -9,7 +9,6 @@
 //! Individual device drivers are expected to make sense of the exact structure of the information
 //! in their respective portion of the tree, but this module contains common structures and
 //! iterators to make that easier.
-//!
 use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
@@ -207,19 +206,27 @@ pub struct DeviceTree<'a> {
 }
 
 impl DeviceTree<'_> {
-    /// Create a [`DeviceTree`] struct that represents a device tree blob resident in memory.
+    /// Create a [`DeviceTree`] struct that represents a device tree blob resident in memory of an
+    /// unknown size, like one provided by U-boot.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the header present in `buf` is incorrect, in particular if:
+    /// - the magic value is incorrect.
+    /// - the total length reported in the header does not match the length of the slice.
     ///
     /// # Safety
     /// It is up to the caller to make sure that `ptr` actually points to a valid, mapped device
     /// tree blob, and that it will live for the `'a` lifetime at this address.
+    ///
     pub unsafe fn from_memory<'a>(ptr: *mut u8) -> DeviceTree<'a> {
         use core::slice;
         // discover the actual size of the tree from the header
         let header = fdt::BlobHeader {
-            buf: slice::from_raw_parts(ptr, core::mem::size_of::<u32>() * 2),
+            buf: slice::from_raw_parts(ptr, fdt::HEADER_SIZE),
         };
         let buf = slice::from_raw_parts(ptr, header.total_size() as usize);
-        Self::from_bytes(buf)
+        Self::from_bytes_and_header(buf, header)
     }
 
     /// Create a [`DeviceTree`] that parses the blob present in `buf`.
@@ -233,9 +240,13 @@ impl DeviceTree<'_> {
     #[must_use]
     pub fn from_bytes(buf: &[u8]) -> DeviceTree {
         let header = fdt::BlobHeader { buf };
+        Self::from_bytes_and_header(buf, header)
+    }
+
+    fn from_bytes_and_header<'a>(buf: &'a [u8], header: fdt::BlobHeader<'a>) -> DeviceTree<'a> {
         assert_eq!(
             header.magic(),
-            fdt::EXPECTED_MAGIC,
+            fdt::HEADER_EXPECTED_MAGIC,
             "buffer header has incorrect magic value"
         );
         assert_eq!(
@@ -243,11 +254,12 @@ impl DeviceTree<'_> {
             buf.len(),
             "buffer incorrect size according to header"
         );
-        // log::debug!("device tree at {:x}, header={:?}", addr as usize, header);
+
         let str_start = header.off_dt_strings() as usize;
         let str_end = str_start + header.size_dt_strings() as usize;
         let structs_start = header.off_dt_struct() as usize;
         let structs_end = str_start + header.size_dt_structs() as usize;
+
         DeviceTree {
             header,
             strings: &buf[str_start..str_end],
@@ -401,6 +413,35 @@ mod tests {
                 c
             ),
         }
+    }
+
+    #[test]
+    fn cannot_find_nonexistent_property() {
+        let tree = test_tree();
+        let r = tree.find_property(b"/cpus/this/property/does/not/exist");
+        assert!(r.is_none());
+    }
+
+    #[test]
+    fn node_properties_exact() {
+        let tree = test_tree();
+        let mut properties = std::collections::HashSet::from([
+            "clock-names",
+            "clocks",
+            "interrupts",
+            "reg",
+            "compatible",
+        ]);
+
+        for (name, _) in tree.iter_node_properties(b"/pl011@9000000").unwrap() {
+            let name_str = core::str::from_utf8(name).unwrap();
+            assert!(properties.remove(name_str));
+        }
+
+        assert!(
+            properties.is_empty(),
+            "did not find all properties: {properties:?}"
+        );
     }
 
     #[test]
