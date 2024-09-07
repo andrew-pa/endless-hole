@@ -13,7 +13,6 @@
 use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
-use iter::NodePropertyIter;
 use itertools::Itertools;
 
 pub mod fdt;
@@ -57,6 +56,44 @@ impl<'dt> core::fmt::Debug for StringList<'dt> {
     }
 }
 
+/// An array of (address, length) pairs representing the address space regions of a device's resources.
+#[derive(Clone)]
+pub struct Registers<'dt> {
+    /// Raw bytes that make up the array.
+    pub data: &'dt [u8],
+    /// Number of u32 cells that make up an address.
+    pub address_cells: u32,
+    /// Number of u32 cells that make up a size.
+    pub size_cells: u32,
+}
+
+impl<'dt> Registers<'dt> {
+    /// Iterate over the (address, length) pairs contained in this array.
+    ///
+    /// These are yielded as `usize`.
+    #[must_use]
+    pub fn iter(&self) -> iter::RegistersIter {
+        iter::RegistersIter {
+            regs: self,
+            offset: 0,
+        }
+    }
+}
+
+impl<'a: 'dt, 'dt> IntoIterator for &'a Registers<'dt> {
+    type IntoIter = iter::RegistersIter<'a, 'dt>;
+    type Item = (usize, usize);
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl<'dt> core::fmt::Debug for Registers<'dt> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_list().entries(self.iter()).finish()
+    }
+}
+
 /// A property value in a device tree.
 #[derive(Debug)]
 pub enum Value<'dt> {
@@ -73,11 +110,13 @@ pub enum Value<'dt> {
     StringList(StringList<'dt>),
     /// A blob of bytes. This means the property has a device specific format.
     Bytes(&'dt [u8]),
+    /// An array of (address, length) pairs representing the address space regions of a device's resources.
+    Reg(Registers<'dt>),
 }
 
 impl<'dt> Value<'dt> {
     /// Parse bytes into a value based on the name and expected type.
-    fn parse(name: &[u8], bytes: &'dt [u8]) -> Value<'dt> {
+    fn parse(name: &[u8], bytes: &'dt [u8], address_cells: u32, size_cells: u32) -> Value<'dt> {
         // See Devicetree Specification section 2.3
         match name {
             b"compatible" => Value::StringList(StringList { data: bytes }),
@@ -89,6 +128,11 @@ impl<'dt> Value<'dt> {
             b"#address-cells" | b"#size-cells" | b"virtual-reg" => {
                 Value::U32(BigEndian::read_u32(bytes))
             }
+            b"reg" => Value::Reg(Registers {
+                data: bytes,
+                address_cells,
+                size_cells,
+            }),
             _ => Value::Bytes(bytes),
         }
     }
@@ -233,6 +277,8 @@ impl DeviceTree<'_> {
         let mut segments = path.split(|p| *p == b'/');
         let mut looking_for = segments.next()?;
         let mut tokens = self.iter_structure();
+        let mut current_address_cells: Option<u32> = None;
+        let mut current_size_cells: Option<u32> = None;
         while let Some(token) = tokens.next() {
             match token {
                 fdt::Token::StartNode(name) => {
@@ -243,7 +289,10 @@ impl DeviceTree<'_> {
                                 return Some(iter::NodePropertyIter {
                                     cur: tokens,
                                     depth: 1,
-                                })
+                                    // defaults from the spec in section 2.3.5
+                                    parent_address_cells: current_address_cells.unwrap_or(2),
+                                    parent_size_cells: current_size_cells.unwrap_or(1),
+                                });
                             }
                             Some(next_segment) => {
                                 looking_for = next_segment;
@@ -264,8 +313,14 @@ impl DeviceTree<'_> {
                         }
                     }
                 }
+                // because we skip everything that is not on the path, these will only be
+                // encountered in parents of the node we are searching for
                 fdt::Token::EndNode => return None,
-                fdt::Token::Property { .. } => {}
+                fdt::Token::Property { name, data } => match name {
+                    b"#address-cells" => current_address_cells = Some(BigEndian::read_u32(data)),
+                    b"#size-cells" => current_size_cells = Some(BigEndian::read_u32(data)),
+                    _ => {}
+                },
             }
         }
         None
@@ -345,6 +400,35 @@ mod tests {
                 "unexpected value for /intc@8000000/v2m@8020000/phandle: {:?}",
                 c
             ),
+        }
+    }
+
+    #[test]
+    fn reg_property() {
+        let tree = test_tree();
+        match tree.find_property(b"/intc@8000000/reg") {
+            Some(Value::Reg(regs)) => {
+                let mut i = regs.iter();
+                assert_eq!(i.next(), Some((0x0800_0000, 0x1_0000)));
+                assert_eq!(i.next(), Some((0x0801_0000, 0x1_0000)));
+                assert_eq!(i.next(), None);
+            }
+            c => panic!("unexpected value for /intc@8000000/reg: {:?}", c),
+        }
+    }
+
+    #[test]
+    fn reg_property_nested() {
+        let tree = test_tree();
+        match tree.find_property(b"/cpus/cpu@0/reg") {
+            Some(Value::Reg(regs)) => {
+                assert_eq!(regs.address_cells, 1);
+                assert_eq!(regs.size_cells, 0);
+                let mut i = regs.iter();
+                assert_eq!(i.next(), Some((0, 0)));
+                assert_eq!(i.next(), None);
+            }
+            c => panic!("unexpected value for /cpus/cpu@0/reg: {:?}", c),
         }
     }
 }

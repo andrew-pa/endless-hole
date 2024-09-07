@@ -4,7 +4,7 @@ use core::ffi::CStr;
 
 use byteorder::{BigEndian, ByteOrder as _};
 
-use super::{fdt, Value};
+use super::{fdt, Registers, Value};
 
 fn pad_end_4b(num_bytes: usize) -> usize {
     num_bytes
@@ -126,6 +126,8 @@ impl<'dt> Iterator for StringListIter<'dt> {
 pub struct NodePropertyIter<'a> {
     pub(super) cur: FlattenedTreeIter<'a>,
     pub(super) depth: usize,
+    pub(super) parent_address_cells: u32,
+    pub(super) parent_size_cells: u32,
 }
 
 impl<'a> Iterator for NodePropertyIter<'a> {
@@ -151,11 +153,58 @@ impl<'a> Iterator for NodePropertyIter<'a> {
                 fdt::Token::Property { name, data } => {
                     if self.depth == 1 {
                         // We're in the target node; yield the property
-                        return Some((name, Value::parse(name, data)));
+                        return Some((
+                            name,
+                            Value::parse(
+                                name,
+                                data,
+                                self.parent_address_cells,
+                                self.parent_size_cells,
+                            ),
+                        ));
                     }
                 }
             }
         }
         None
+    }
+}
+
+/// An iterator over the (address, length) pairs contained in this array of device register regions.
+pub struct RegistersIter<'a, 'dt> {
+    pub(super) regs: &'a Registers<'dt>,
+    pub(super) offset: usize,
+}
+
+impl<'a, 'dt> Iterator for RegistersIter<'a, 'dt> {
+    type Item = (usize, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.offset >= self.regs.data.len() {
+            return None;
+        }
+
+        let mut address = 0usize;
+        for _ in 0..self.regs.address_cells {
+            address =
+                (address << 32) | (BigEndian::read_u32(&self.regs.data[self.offset..]) as usize);
+            self.offset += 4;
+
+            if self.offset > self.regs.data.len() {
+                return None;
+            }
+        }
+
+        let mut size = 0usize;
+        for _ in 0..self.regs.size_cells {
+            size = (size << 32) | (BigEndian::read_u32(&self.regs.data[self.offset..]) as usize);
+            self.offset += 4;
+
+            if self.offset > self.regs.data.len() {
+                return None;
+            }
+        }
+
+        Some((address, size))
     }
 }
