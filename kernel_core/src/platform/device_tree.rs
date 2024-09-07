@@ -152,6 +152,7 @@ impl<'dt> Value<'dt> {
         }
     }
 
+    /// If the value is of type `u32`, extract the value as a Rust `u32`.
     pub fn into_u32(self) -> Option<u32> {
         if let Self::U32(v) = self {
             Some(v)
@@ -160,6 +161,7 @@ impl<'dt> Value<'dt> {
         }
     }
 
+    /// If the value is of type `u64`, extract the value as a Rust `u64`.
     pub fn into_u64(self) -> Option<u64> {
         if let Self::U64(v) = self {
             Some(v)
@@ -168,6 +170,7 @@ impl<'dt> Value<'dt> {
         }
     }
 
+    /// If the value is of type `phandle`, extract the value as a Rust `u32`.
     pub fn into_phandle(self) -> Option<u32> {
         if let Self::Phandle(v) = self {
             Some(v)
@@ -176,6 +179,7 @@ impl<'dt> Value<'dt> {
         }
     }
 
+    /// If the value is of type `string`, extract the value as a Rust [`CStr`].
     pub fn into_string(self) -> Option<&'dt CStr> {
         if let Self::String(v) = self {
             Some(v)
@@ -184,6 +188,7 @@ impl<'dt> Value<'dt> {
         }
     }
 
+    /// If the value is of type `stringlist`, extract the value as [`StringList`].
     pub fn into_strings(self) -> Option<StringList<'dt>> {
         if let Self::Strings(v) = self {
             Some(v)
@@ -192,6 +197,7 @@ impl<'dt> Value<'dt> {
         }
     }
 
+    /// If the value is unparsed, extract the value as a Rust `&[u8]`, returning the raw bytes.
     pub fn into_bytes(self) -> Option<&'dt [u8]> {
         if let Self::Bytes(v) = self {
             Some(v)
@@ -232,6 +238,7 @@ pub struct MemRegionIter<'dt> {
 /// A list of strings in the blob.
 #[derive(Clone)]
 pub struct StringList<'dt> {
+    /// The raw bytes of the list of strings.
     pub data: &'dt [u8],
 }
 

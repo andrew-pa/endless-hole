@@ -1,13 +1,15 @@
 //! The Endless Hole microkernel. See `spec/kernel.md` for the specification.
+//!
+//! This binary is the actual kernel, containing the entry point.
 #![no_std]
 #![no_main]
 #![deny(missing_docs)]
 
-core::arch::global_asm!(include_str!("./platform/start.S"));
+core::arch::global_asm!(core::include_str!("./start.S"));
 
-mod platform;
+mod bss;
 
-use platform::device_tree::DeviceTree;
+use kernel_core::platform::device_tree::{DeviceTree, Value as DTValue};
 
 /// The main entry point for the kernel.
 ///
@@ -17,14 +19,14 @@ use platform::device_tree::DeviceTree;
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn kmain(device_tree_blob: *mut u8) -> ! {
     unsafe {
-        platform::bss::zero_bss_section();
+        bss::zero_bss_section();
     }
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob) };
 
     let stdout_device_name = device_tree
         .find_property(b"/chosen/stdout-path")
-        .and_then(platform::device_tree::Value::into_bytes)
+        .and_then(DTValue::into_bytes)
         // TODO: default to QEMU virt board UART for now, should be platform default
         .unwrap_or(b"/pl011@9000000");
 

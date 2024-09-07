@@ -29,4 +29,13 @@ version = "0.1.0"
 dependencies = [
  "byteorder",
  "itertools",
+ "kernel_core",
+]
+
+[[package]]
+name = "kernel_core"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "itertools",
 ]
