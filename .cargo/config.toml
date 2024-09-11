@@ -1,4 +1,5 @@
-[target.aarch64-unknown-none]
 
-[build]
-target = "aarch64-unknown-none"
+[profile.dev]
+panic = "abort"
+[profile.release]
+panic = "abort"
