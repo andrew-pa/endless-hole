@@ -23,7 +23,7 @@ type Result<T> = core::result::Result<T, Error>;
 /// the physical address of the `T`.
 ///
 /// The type `T` is the type of the object pointed to. The default of `()` is given because often
-/// physical addresses are given that don't point to concrete objects.
+/// physical addresses arise that don't point to concrete objects.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct PhysicalPointer<T = ()>(usize, PhantomData<*mut T>);
@@ -94,7 +94,7 @@ pub trait PageAllocator {
     /// from [`PageAllocator::allocate`].
     ///
     /// # Errors
-    /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator (including the null pointer).
+    /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
     fn free(&self, pages: *mut u8) -> Result<()>;
 }
 
@@ -106,6 +106,9 @@ mod tests {
 
     use super::PageAllocator;
 
+    /// Generate tests to ensure correct implementation of the [`PageAllocator`] trait.
+    ///
+    /// `$allocator_name` is the name of the allocator, and `$create_allocator` is an expression that evaluates to a new allocator.
     #[macro_export]
     macro_rules! test_page_allocator {
         ($allocator_name:ident, $create_allocator:expr) => {
@@ -348,20 +351,22 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
-    /// Mock implementation of a `PageAllocator` trait with page limits.
-    pub struct MockAllocator {
+    /// Mock implementation of the [`PageAllocator`] trait with page limits.
+    ///
+    /// This allocator uses the system allocator to allocate the underlying memory.
+    pub struct MockPageAllocator {
         page_size: usize,
         max_pages: usize,
         allocated_pages: Arc<Mutex<HashMap<*mut u8, usize>>>, // Map from pointer to number of pages
         total_allocated: Arc<Mutex<usize>>,                   // Tracks total allocated pages
     }
 
-    impl MockAllocator {
+    impl MockPageAllocator {
         /// Create a new `MockAllocator` with the given page size and maximum number of pages.
         pub fn new(page_size: usize, max_pages: usize) -> Self {
             assert!(page_size > 0);
             assert!(max_pages > 0);
-            MockAllocator {
+            MockPageAllocator {
                 page_size,
                 max_pages,
                 allocated_pages: Default::default(),
@@ -370,7 +375,7 @@ mod tests {
         }
     }
 
-    impl PageAllocator for MockAllocator {
+    impl PageAllocator for MockPageAllocator {
         fn page_size(&self) -> usize {
             self.page_size
         }
@@ -435,5 +440,5 @@ mod tests {
         }
     }
 
-    test_page_allocator!(MockAllocator, MockAllocator::new(4096, 1024));
+    test_page_allocator!(MockPageAllocator, MockPageAllocator::new(4096, 1024));
 }

@@ -19,7 +19,7 @@ clean:
 check cargo_args="" clippy_args="":
     cargo fmt --check {{cargo_args}}
     cargo check --all-features {{cargo_args}}
-    cargo clippy --all-features {{cargo_args}} -- -Dclippy::all -Wclippy::pedantic {{clippy_args}}
+    cargo clippy --all-features {{cargo_args}} -- -Dmissing_docs -Dclippy::all -Wclippy::pedantic {{clippy_args}}
 
 # Test Rust crates that are testable on the host.
 test cargo_args="":

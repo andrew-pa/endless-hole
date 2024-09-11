@@ -52,6 +52,13 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     )
     .unwrap();
 
+    if let Some(board_model) = device_tree
+        .find_property(b"/model")
+        .and_then(DTValue::into_string)
+    {
+        writeln!(&mut uart, "Board model: {board_model:?}").unwrap();
+    }
+
     #[allow(clippy::empty_loop)]
     loop {}
 }
@@ -66,11 +73,16 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 }
 
 /// The kernel-wide panic handler.
+///
+/// Code here should not assume anything about the state of the kernel.
+/// Currently this only writes to the platform defined debug UART.
 #[panic_handler]
 pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
-    let mut uart = uart::PL011::from_platform_debug_best_guess();
+    unsafe {
+        let mut uart = uart::PL011::from_platform_debug_best_guess();
 
-    writeln!(&mut uart, "\x1b[31mpanic!\x1b[0m {info}").unwrap();
+        writeln!(&mut uart, "\x1b[31mpanic!\x1b[0m {info}").unwrap();
+    }
 
     #[allow(clippy::empty_loop)]
     loop {}
