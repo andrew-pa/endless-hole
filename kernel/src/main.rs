@@ -13,9 +13,9 @@ mod uart;
 
 use core::fmt::Write as _;
 
-use kernel_core::platform::{
-    device_tree::{DeviceTree, Value as DTValue},
-    PhysicalPointer,
+use kernel_core::{
+    memory::PhysicalPointer,
+    platform::device_tree::{DeviceTree, Value as DTValue},
 };
 
 /// The main entry point for the kernel.
@@ -45,7 +45,12 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     let mut uart =
         uart::PL011::from_device_tree(&device_tree, stdout_device_path).expect("init UART");
 
-    writeln!(&mut uart, "Hello, world!").unwrap();
+    writeln!(
+        &mut uart,
+        "Hello, world! Using `{}` for debug logs.",
+        core::str::from_utf8(stdout_device_path).unwrap()
+    )
+    .unwrap();
 
     #[allow(clippy::empty_loop)]
     loop {}

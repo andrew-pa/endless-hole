@@ -5,4 +5,8 @@ edition = "2021"
 
 [dependencies]
 itertools = { version = "^0.13", default-features = false }
+snafu = { version = "^0.8", default-features = false, features = ["unstable-core-error"] }
 byteorder = { version = "^1.5", default-features = false }
+
+[dev-dependencies]
+paste = "^1.0"

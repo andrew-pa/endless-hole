@@ -4,9 +4,9 @@
 
 use core::fmt::Write;
 
-use kernel_core::platform::{
-    device_tree::{DeviceTree, Value},
-    PhysicalPointer,
+use kernel_core::{
+    memory::PhysicalPointer,
+    platform::device_tree::{DeviceTree, Value},
 };
 
 /// The PL011 UART object.

@@ -11,6 +11,7 @@
 #[macro_use]
 extern crate std;
 
+pub mod memory;
 pub mod platform;
 
 #[cfg(test)]
