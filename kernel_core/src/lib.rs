@@ -6,6 +6,7 @@
 //! The actual kernel entry point is in the `kernel` crate.
 #![no_std]
 #![deny(missing_docs)]
+#![feature(pointer_is_aligned_to)]
 
 #[cfg(all(test, not(target_os = "none")))]
 #[macro_use]
