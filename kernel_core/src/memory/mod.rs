@@ -386,6 +386,29 @@ mod tests {
                         $cleanup_allocator(cx, allocator);
                     }
 
+                    // Test multiple allocations without freeing, then freeing first the odd
+                    // indices, then the even indices in reverse
+                    #[test]
+                    fn allocate_without_freeing_then_free_all_mixed() {
+                        let (cx, allocator) = $setup_allocator();
+
+                        let mut ptrs = std::vec::Vec::new();
+                        for _ in 0..128 {
+                            let ptr = allocator.allocate(1).expect("Failed to allocate 1 pages");
+                            assert!(!ptr.is_null(), "Pointer should not be null");
+                            ptrs.push(ptr);
+                        }
+
+                        // Now free all allocations
+                        for ptr in ptrs.iter().skip(1).step_by(2) {
+                            allocator.free(*ptr, 1).expect("Failed to free allocated pages");
+                        }
+                        for ptr in ptrs.iter().step_by(2).rev() {
+                            allocator.free(*ptr, 1).expect("Failed to free allocated pages");
+                        }
+                        $cleanup_allocator(cx, allocator);
+                    }
+
                     #[test]
                     fn allocate_huge() {
                         let (cx, allocator) = $setup_allocator();
@@ -397,6 +420,9 @@ mod tests {
                         allocator.free(ptr, size).expect("Failed to free max allocation");
                         $cleanup_allocator(cx, allocator);
                     }
+
+                    // TODO: interleaved batch tests
+                    // TODO: concurrent tests
                 }
             }
         };

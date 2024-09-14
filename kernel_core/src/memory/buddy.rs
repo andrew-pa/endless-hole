@@ -16,7 +16,11 @@ struct FreeHeader {
     next_block: AtomicPtr<FreeHeader>,
 }
 
-/// Page allocator that uses the buddy memory allocation algorithm.
+/// Page allocator that uses the buddy memory allocation algorithm to allocate pages of physical
+/// memory.
+///
+/// `MAX_ORDER` is the largest power of two block of pages that will be managed by the allocator.
+#[allow(clippy::module_name_repetitions)]
 pub struct BuddyPageAllocator<const MAX_ORDER: usize = 10> {
     base_addr: *mut u8,
     end_addr: *mut u8,
@@ -26,7 +30,17 @@ pub struct BuddyPageAllocator<const MAX_ORDER: usize = 10> {
 
 impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     /// Create a new allocator that will allocate memory from the region at `memory_start` of length `memory_length` bytes.
-    pub fn new(page_size: usize, memory_start: *mut u8, memory_length: usize) -> Self {
+    /// The memory start address must be page aligned, and must contain a whole number of pages.
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the aformentioned invarients are not met.
+    ///
+    /// # Safety
+    ///
+    /// The memory region provided must be entirely valid memory that is safe to dereference, live for the lifetime of the allocator and not be shared
+    /// outside of the allocator.
+    pub unsafe fn new(page_size: usize, memory_start: *mut u8, memory_length: usize) -> Self {
         assert!(memory_start.is_aligned_to(page_size));
         assert_eq!(memory_length % page_size, 0);
         let a = Self {
@@ -100,10 +114,12 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
 
     fn try_remove_buddy(&self, order: usize, buddy: NonNull<FreeHeader>) -> bool {
         let free_list = &self.free_blocks[order];
-        loop {
+        // keep trying until successful or not found
+        'retry: loop {
             let mut prev_ptr: Option<NonNull<FreeHeader>> = None;
             let mut current_ptr = NonNull::new(free_list.load(Ordering::Acquire));
 
+            // step through the list
             while let Some(current) = current_ptr {
                 let next_ptr = unsafe { current.as_ref().next_block.load(Ordering::Relaxed) };
 
@@ -136,14 +152,14 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
 
                     if success {
                         return true;
-                    } else {
-                        // Failed to remove; retry from the beginning of the list.
-                        break;
                     }
-                } else {
-                    prev_ptr = current_ptr;
-                    current_ptr = NonNull::new(next_ptr);
+
+                    // Failed to remove; retry from the beginning of the list.
+                    continue 'retry;
                 }
+
+                prev_ptr = current_ptr;
+                current_ptr = NonNull::new(next_ptr);
             }
 
             // Buddy not found in the free list.
@@ -162,6 +178,24 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
         false
     }
 
+    #[cfg(test)]
+    fn count_in_free_list(&self, order: usize) -> usize {
+        let mut count = 0;
+        let mut cur = NonNull::new(self.free_blocks[order].load(Ordering::Acquire));
+        while let Some(n) = cur {
+            count += 1;
+            cur = unsafe { NonNull::new(n.as_ref().next_block.load(Ordering::Relaxed)) };
+        }
+        count
+    }
+
+    #[cfg(test)]
+    fn total_pages_free(&self) -> usize {
+        (0..MAX_ORDER)
+            .map(|order| self.count_in_free_list(order) * (1 << order))
+            .sum()
+    }
+
     fn split_block_to_size(
         &self,
         block: NonNull<FreeHeader>,
@@ -172,7 +206,7 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
             current_order -= 1;
             let new_size = 1 << current_order;
             unsafe {
-                let new_block = block.byte_offset((new_size * self.page_size) as isize);
+                let new_block = block.cast::<u8>().add(new_size * self.page_size).cast();
                 self.push_free(current_order, new_block);
             }
         }
@@ -213,7 +247,7 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
 
         let block = self.split_block_to_size(free_block, actual_order, order);
 
-        Ok(block.as_ptr() as *mut u8)
+        Ok(block.cast().as_ptr())
     }
 
     fn free(&self, pages: *mut u8, num_pages: usize) -> super::Result<()> {
@@ -266,21 +300,23 @@ mod tests {
 
     type TestContext = (*mut u8, Layout);
 
+    const TOTAL_PAGES: usize = 512;
+
     fn setup_allocator() -> (TestContext, BuddyPageAllocator) {
         let page_size = 4096;
-        let num_pages = 512;
-        let total_size = num_pages * page_size;
+        let total_size = TOTAL_PAGES * page_size;
         let layout = Layout::from_size_align(total_size, page_size).unwrap();
         let memory = unsafe { std::alloc::alloc(layout.clone()) };
         assert!(!memory.is_null());
 
-        (
-            (memory, layout),
-            BuddyPageAllocator::new(page_size, memory, total_size),
-        )
+        ((memory, layout), unsafe {
+            BuddyPageAllocator::new(page_size, memory, total_size)
+        })
     }
 
-    fn cleanup_allocator(cx: TestContext, _allocator: BuddyPageAllocator) {
+    fn cleanup_allocator(cx: TestContext, allocator: BuddyPageAllocator) {
+        // every page should be free at the end
+        assert_eq!(allocator.total_pages_free(), TOTAL_PAGES);
         unsafe {
             std::alloc::dealloc(cx.0, cx.1);
         }
