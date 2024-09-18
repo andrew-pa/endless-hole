@@ -421,6 +421,8 @@ mod tests {
         total_allocated: Arc<Mutex<usize>>,                   // Tracks total allocated pages
     }
 
+    unsafe impl Sync for MockPageAllocator {}
+
     impl MockPageAllocator {
         /// Create a new `MockAllocator` with the given page size and maximum number of pages.
         pub fn new(page_size: usize, max_pages: usize) -> Self {

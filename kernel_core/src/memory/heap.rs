@@ -17,6 +17,7 @@ struct FreeHeader {
 #[repr(C)]
 struct AllocatedHeader {
     size: usize,
+    block: NonNull<u8>,
 }
 
 /// A heap allocator for arbitrary sized allocations that is usable as a Rust heap ([`GlobalAlloc`]).
@@ -94,7 +95,6 @@ impl<'pa, PA: PageAllocator> HeapAllocator<'pa, PA> {
     unsafe fn push_free_block(&self, mut block: NonNull<FreeHeader>) {
         let mut head = self.free_list.load(Ordering::Acquire);
         loop {
-            // Set the next pointer of the last block in the list to the current head.
             block.as_mut().next.store(head, Ordering::Relaxed);
 
             match self.free_list.compare_exchange_weak(
@@ -108,87 +108,116 @@ impl<'pa, PA: PageAllocator> HeapAllocator<'pa, PA> {
             }
         }
     }
+
+    fn is_free(&self, ptr: NonNull<FreeHeader>) -> bool {
+        let mut cursor = self.free_list.load(Ordering::Acquire);
+        unsafe {
+            while let Some(block) = cursor.as_ref() {
+                if ptr.as_ptr() >= cursor && ptr.as_ptr() < cursor.byte_add(block.size) {
+                    #[cfg(test)]
+                    println!("{ptr:x?} in {cursor:x?}+{}", block.size);
+                    return true;
+                }
+                cursor = block.next.load(Ordering::Acquire);
+            }
+            false
+        }
+    }
 }
 
 fn align_up(offset: usize, align: usize) -> usize {
     (offset + align - 1) & !(align - 1)
 }
 
+fn header_padding_max(layout: Layout) -> usize {
+    let alloc_header_layout = Layout::new::<AllocatedHeader>();
+    if layout.align() <= alloc_header_layout.align() {
+        0
+    } else if layout.align() == alloc_header_layout.size() {
+        alloc_header_layout.align()
+    } else {
+        layout.align() - alloc_header_layout.size()
+    }
+}
+
+/// Smallest number of pages that will be added to the heap when it runs out of free blocks.
+/// Large allocations may request more pages than this.
+const MIN_PAGE_ALLOCATION: usize = 4;
+
 unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let alloc_header_layout = Layout::new::<AllocatedHeader>();
-        let between_header_and_data_padding =
-            alloc_header_layout.padding_needed_for(layout.align());
+        let between_header_and_data_padding_max = header_padding_max(layout);
         let required_block_size =
-            alloc_header_layout.size() + between_header_and_data_padding + layout.size();
+            alloc_header_layout.size() + between_header_and_data_padding_max + layout.size();
 
         let block = self.try_remove_fit(required_block_size);
 
-        if let Some(block) = block {
+        let (total_block_size, block) = if let Some(block) = block {
             let block_size = block.as_ref().size;
             assert!(block_size >= required_block_size);
 
-            if block_size.saturating_sub(required_block_size) > size_of::<FreeHeader>() {
-                // put back the rest
-                let rest_offset = align_up(required_block_size, align_of::<FreeHeader>());
-                let mut rest_block = block.byte_add(rest_offset);
-                *rest_block.as_mut() = FreeHeader {
-                    size: block_size - rest_offset,
-                    next: AtomicPtr::default(),
-                };
-                self.push_free_block(rest_block);
-            }
-
-            let mut header: NonNull<AllocatedHeader> = block.cast();
-            *header.as_mut() = AllocatedHeader {
-                size: required_block_size,
-            };
-            block
-                .cast()
-                .add(alloc_header_layout.size() + between_header_and_data_padding)
-                .as_ptr()
+            (block_size, block)
         } else {
             let page_count = required_block_size
                 .div_ceil(self.page_allocator.page_size())
-                .max(4);
+                .max(MIN_PAGE_ALLOCATION);
             assert!(
                 layout.align() <= self.page_allocator.page_size(),
-                "layout alignments greater than a page are unsupported"
+                "layout alignments greater than a page are unsupported, layout={layout:?}"
             );
             if let Ok(pages) = self.page_allocator.allocate(page_count) {
-                let mut header: NonNull<AllocatedHeader> = pages.cast();
-                *header.as_mut() = AllocatedHeader {
-                    size: required_block_size,
-                };
-                pages
-                    .cast()
-                    .add(alloc_header_layout.size() + between_header_and_data_padding)
-                    .as_ptr()
+                (page_count * self.page_allocator.page_size(), pages.cast())
             } else {
-                null_mut()
+                return null_mut();
             }
+        };
+
+        let padding_required = block
+            .cast::<u8>()
+            .add(alloc_header_layout.size())
+            .align_offset(layout.align());
+        assert!(padding_required <= between_header_and_data_padding_max, "padding required {padding_required} <= max padding {between_header_and_data_padding_max}");
+
+        let actual_block_size = alloc_header_layout.size() + padding_required + layout.size();
+
+        // #[cfg(test)]
+        // println!("alloc {total_block_size} ({actual_block_size} / {required_block_size}) {block:x?} padding_max={between_header_and_data_padding_max} padding_req={padding_required}");
+
+        if total_block_size.saturating_sub(actual_block_size) > size_of::<FreeHeader>() {
+            // put back the rest
+            let rest_offset = align_up(actual_block_size, align_of::<FreeHeader>());
+            let mut rest_block = block.byte_add(rest_offset);
+            *rest_block.as_mut() = FreeHeader {
+                size: total_block_size - rest_offset,
+                next: AtomicPtr::default(),
+            };
+            self.push_free_block(rest_block);
         }
+
+        // place the padding first, then the header right before the data so we can find it in `dealloc`.
+        let mut header: NonNull<AllocatedHeader> = block.byte_add(padding_required).cast();
+        *header.as_mut() = AllocatedHeader {
+            size: actual_block_size,
+            block: block.cast(),
+        };
+        header.add(1).cast().as_ptr()
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if let Some(ptr) = NonNull::new(ptr) {
             let alloc_header_layout = Layout::new::<AllocatedHeader>();
 
-            // Trust the `layout` to locate the header.
-            // This has the side-effect of checking the validity of the `dealloc` call in a sense.
-            let between_header_and_data_padding =
-                alloc_header_layout.padding_needed_for(layout.align());
-            let header_offset = between_header_and_data_padding + size_of::<AllocatedHeader>();
-            let header: NonNull<AllocatedHeader> = ptr
-                .offset(-(isize::try_from(header_offset).unwrap()))
-                .cast();
+            let header: NonNull<AllocatedHeader> = ptr.cast().offset(-1);
             let block_claimed_size = header.as_ref().size;
-            let total_size =
-                alloc_header_layout.size() + between_header_and_data_padding + layout.size();
-            assert!(block_claimed_size >= total_size,
-                "block_claimed_size<total_size! block_claimed_size={block_claimed_size}, total_size={total_size}, padding={between_header_and_data_padding}, layout={layout:?}");
+            let min_size = alloc_header_layout.size() + layout.size();
+            let max_size = header_padding_max(layout) + min_size;
+            assert!(min_size <= block_claimed_size && block_claimed_size <= max_size,
+                "min_size<=block_claimed_size<=max_size! block_claimed_size={block_claimed_size}, min_size={min_size}, max_size={max_size}, layout={layout:?}");
+            let mut free_block: NonNull<FreeHeader> = header.as_ref().block.cast();
 
-            let mut free_block: NonNull<FreeHeader> = header.cast();
+            assert!(!self.is_free(free_block), "double free detected");
+
             *free_block.as_mut() = FreeHeader {
                 size: block_claimed_size,
                 next: AtomicPtr::default(),
@@ -201,7 +230,7 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
 #[cfg(test)]
 mod tests {
     use core::alloc::Layout;
-    use std::vec::Vec;
+    use std::{thread, vec::Vec};
 
     use test_case::test_matrix;
 
@@ -218,7 +247,11 @@ mod tests {
             .map(|_| unsafe {
                 let p = allocator.alloc(layout);
                 assert!(!p.is_null());
-                assert!(p.is_aligned_to(layout.align()));
+                assert!(
+                    p.is_aligned_to(layout.align()),
+                    "{p:x?} not aligned to {}",
+                    layout.align()
+                );
                 p
             })
             .collect()
@@ -281,6 +314,37 @@ mod tests {
     }
 
     #[test_matrix(
+        [3, 7],
+        [free_batch, free_batch_rev, free_batch_interleave],
+        [27,100],
+        [8],
+        [128]
+    )]
+    fn concurrent_batch(
+        thread_count: usize,
+        free_fn: fn(
+            allocator: &HeapAllocator<'_, MockPageAllocator>,
+            layout: Layout,
+            batch: Vec<*mut u8>,
+        ),
+        size: usize,
+        alignment: usize,
+        batch_size: usize,
+    ) {
+        let pa = create_page_allocator();
+        let a = HeapAllocator::new(&pa);
+        let layout = Layout::from_size_align(size, alignment).expect("create layout");
+        thread::scope(|s| {
+            for _ in 0..thread_count {
+                s.spawn(|| {
+                    let batch = allocate_batch(&a, layout, batch_size);
+                    free_fn(&a, layout, batch);
+                });
+            }
+        });
+    }
+
+    #[test_matrix(
         [free_batch, free_batch_rev, free_batch_interleave],
         [8, 27, 64],
         [1, 8, 256],
@@ -310,6 +374,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn double_free() {
         let pa = create_page_allocator();
         let a = HeapAllocator::new(&pa);
@@ -322,6 +387,7 @@ mod tests {
     }
 
     #[test]
+    #[should_panic]
     fn double_free_tricky() {
         let pa = create_page_allocator();
         let a = HeapAllocator::new(&pa);
