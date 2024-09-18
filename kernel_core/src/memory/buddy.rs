@@ -228,7 +228,7 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
         self.page_size
     }
 
-    fn allocate(&self, num_pages: usize) -> super::Result<*mut u8> {
+    fn allocate(&self, num_pages: usize) -> super::Result<NonNull<u8>> {
         ensure!(num_pages > 0, InvalidSizeSnafu);
 
         let block_size = num_pages
@@ -247,14 +247,14 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
 
         let block = self.split_block_to_size(free_block, actual_order, order);
 
-        Ok(block.cast().as_ptr())
+        Ok(block.cast())
     }
 
-    fn free(&self, pages: *mut u8, num_pages: usize) -> super::Result<()> {
-        let block = NonNull::new(pages).context(UnknownPtrSnafu)?.cast();
+    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> super::Result<()> {
+        let block = pages.cast();
         ensure!(num_pages > 0, InvalidSizeSnafu);
         ensure!(
-            pages >= self.base_addr && pages < self.end_addr,
+            pages.as_ptr() >= self.base_addr && pages.as_ptr() < self.end_addr,
             UnknownPtrSnafu
         );
 
