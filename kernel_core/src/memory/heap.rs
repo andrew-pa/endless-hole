@@ -19,12 +19,17 @@ struct AllocatedHeader {
     size: usize,
 }
 
+/// A heap allocator for arbitrary sized allocations that is usable as a Rust heap ([`GlobalAlloc`]).
+///
+/// The allocator uses a basic free list algorithm.
+#[allow(clippy::module_name_repetitions)]
 pub struct HeapAllocator<'pa, PA> {
     page_allocator: &'pa PA,
     free_list: AtomicPtr<FreeHeader>,
 }
 
 impl<'pa, PA: PageAllocator> HeapAllocator<'pa, PA> {
+    /// Create a new allocator that creates a heap in pages allocated by `page_allocator`.
     pub fn new(page_allocator: &'pa PA) -> Self {
         Self {
             page_allocator,
@@ -129,7 +134,7 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
                 let mut rest_block = block.byte_add(rest_offset);
                 *rest_block.as_mut() = FreeHeader {
                     size: block_size - rest_offset,
-                    next: Default::default(),
+                    next: AtomicPtr::default(),
                 };
                 self.push_free_block(rest_block);
             }
@@ -173,10 +178,9 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
             // This has the side-effect of checking the validity of the `dealloc` call in a sense.
             let between_header_and_data_padding =
                 alloc_header_layout.padding_needed_for(layout.align());
+            let header_offset = between_header_and_data_padding + size_of::<AllocatedHeader>();
             let header: NonNull<AllocatedHeader> = ptr
-                .offset(
-                    -((between_header_and_data_padding + size_of::<AllocatedHeader>()) as isize),
-                )
+                .offset(-(isize::try_from(header_offset).unwrap()))
                 .cast();
             let block_claimed_size = header.as_ref().size;
             let total_size =
@@ -187,7 +191,7 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
             let mut free_block: NonNull<FreeHeader> = header.cast();
             *free_block.as_mut() = FreeHeader {
                 size: block_claimed_size,
-                next: Default::default(),
+                next: AtomicPtr::default(),
             };
             self.push_free_block(free_block);
         }
