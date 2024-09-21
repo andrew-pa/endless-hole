@@ -119,7 +119,7 @@ impl<'dt> Value<'dt> {
         // See Devicetree Specification section 2.3
         match name {
             b"compatible" => Value::StringList(StringList { data: bytes }),
-            b"model" | b"status" => match CStr::from_bytes_until_nul(bytes) {
+            b"model" | b"status" | b"device_type" => match CStr::from_bytes_until_nul(bytes) {
                 Ok(s) => Value::String(s),
                 Err(_) => Value::Bytes(bytes),
             },
@@ -284,6 +284,12 @@ impl DeviceTree<'_> {
     }
 
     /// Iterate over the properties of a node in the tree given the path, if present.
+    ///
+    /// # Arguments
+    /// * `path` - the path of the node to find
+    ///
+    /// # Returns
+    /// An iterator over the properties of the node in the tree, if present.
     #[must_use]
     pub fn iter_node_properties(&self, path: &[u8]) -> Option<iter::NodePropertyIter> {
         let mut segments = path.split(|p| *p == b'/');
@@ -312,17 +318,7 @@ impl DeviceTree<'_> {
                         }
                     } else {
                         // skip this node and all of its children
-                        let mut depth = 1;
-                        for token in tokens.by_ref() {
-                            match token {
-                                fdt::Token::EndNode => depth -= 1,
-                                fdt::Token::StartNode(_) => depth += 1,
-                                fdt::Token::Property { .. } => {}
-                            }
-                            if depth == 0 {
-                                break;
-                            }
-                        }
+                        tokens.skip_node();
                     }
                 }
                 // because we skip everything that is not on the path, these will only be
@@ -338,7 +334,72 @@ impl DeviceTree<'_> {
         None
     }
 
+    /// Iterate over the nodes under `path` whose node-name is `node_name`, where nodes per the
+    /// spec are given names of form `<node-name>@<unit-address>`.
+    /// Each yielded item contains the `unit-address` and an iterator over the properties of that node.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The path to the parent node under which to search for nodes.
+    /// * `node_name` - The node-name to match against the nodes under the given path.
+    ///
+    /// # Returns
+    ///
+    /// An iterator over `NodeItem`, each containing the `unit-address` and properties iterator.
+    #[must_use]
+    pub fn iter_nodes_named<'q>(
+        &self,
+        path: &[u8],
+        node_name: &'q [u8],
+    ) -> Option<iter::NodesNamedIter<'_, 'q>> {
+        let mut segments = path.split(|p| *p == b'/');
+        let mut looking_for = segments.next()?;
+        let mut tokens = self.iter_structure();
+        let mut current_address_cells: Option<u32> = None;
+        let mut current_size_cells: Option<u32> = None;
+        while let Some(token) = tokens.next() {
+            match token {
+                fdt::Token::StartNode(name) => {
+                    if name == looking_for {
+                        // Enter the node.
+                        match segments.next() {
+                            None | Some(&[]) => {
+                                // Found the node at `path`, create the iterator.
+                                return Some(iter::NodesNamedIter {
+                                    cur: tokens,
+                                    depth: 1,
+                                    node_name,
+                                    parent_address_cells: current_address_cells.unwrap_or(2),
+                                    parent_size_cells: current_size_cells.unwrap_or(1),
+                                });
+                            }
+                            Some(next_segment) => {
+                                looking_for = next_segment;
+                            }
+                        }
+                    } else {
+                        // Skip this node and its children.
+                        tokens.skip_node();
+                    }
+                }
+                fdt::Token::EndNode => return None,
+                fdt::Token::Property { name, data } => match name {
+                    b"#address-cells" => current_address_cells = Some(BigEndian::read_u32(data)),
+                    b"#size-cells" => current_size_cells = Some(BigEndian::read_u32(data)),
+                    _ => {}
+                },
+            }
+        }
+        None
+    }
+
     /// Find a property in the tree by path, if it is present.
+    ///
+    /// # Arguments
+    /// * `path` - the path to the property to find
+    ///
+    /// # Returns
+    /// The value of the property if found.
     #[must_use]
     pub fn find_property(&self, path: &[u8]) -> Option<Value> {
         let split = path.iter().rev().find_position(|p| **p == b'/')?.0;
@@ -367,6 +428,8 @@ impl DeviceTree<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::{string::ToString as _, vec::Vec};
+
     use super::*;
 
     /// This test tree blob was generated using QEMU:
@@ -471,5 +534,196 @@ mod tests {
             }
             c => panic!("unexpected value for /cpus/cpu@0/reg: {:?}", c),
         }
+    }
+
+    #[test]
+    fn test_iter_nodes_named_nonexistent() {
+        let tree = test_tree();
+        let nodes = tree.iter_nodes_named(b"/", b"nonexistent");
+        assert!(
+            nodes.is_some(),
+            "Expected an iterator even if no nodes are found under '/'"
+        );
+        let mut nodes = nodes.unwrap();
+
+        assert!(
+            nodes.next().is_none(),
+            "Expected no nodes named 'nonexistent' under '/'"
+        );
+    }
+
+    #[test]
+    fn test_iter_nodes_named_invalid_path() {
+        let tree = test_tree();
+        let nodes = tree.iter_nodes_named(b"/invalid/path", b"anynode");
+        assert!(
+            nodes.is_none(),
+            "Expected 'None' for an invalid path '/invalid/path'"
+        );
+    }
+
+    #[test]
+    fn test_iter_nodes_named_memory() {
+        let tree = test_tree();
+        let nodes = tree.iter_nodes_named(b"/", b"memory");
+        assert!(nodes.is_some(), "Expected to find 'memory' nodes under '/'");
+        let mut nodes = nodes.unwrap();
+
+        let node_item = nodes.next();
+        assert!(
+            node_item.is_some(),
+            "Expected at least one 'memory' node under '/'"
+        );
+
+        let node_item = node_item.unwrap();
+
+        if let Some(unit_addr) = node_item.unit_address {
+            assert_eq!(
+                unit_addr, b"40000000",
+                "Unexpected unit address for 'memory' node"
+            );
+
+            // Check properties
+            let mut found_device_type = false;
+            for (name, value) in node_item.properties {
+                println!(
+                    "found property {}={:?}",
+                    std::str::from_utf8(name).unwrap(),
+                    value
+                );
+                if name == b"device_type" {
+                    if let Value::String(s) = value {
+                        assert_eq!(
+                            s.to_str().unwrap(),
+                            "memory",
+                            "Unexpected 'device_type' value"
+                        );
+                        found_device_type = true;
+                    }
+                }
+            }
+            assert!(
+                found_device_type,
+                "Expected to find 'device_type' property in 'memory' node"
+            );
+        } else {
+            panic!("Expected 'memory' node to have a unit address");
+        }
+
+        // Ensure there are no additional 'memory' nodes under '/'
+        assert!(
+            nodes.next().is_none(),
+            "Expected only one 'memory' node under '/'"
+        );
+    }
+
+    #[test]
+    fn test_iter_nodes_named_virtio_mmio() {
+        let tree = test_tree();
+        let nodes = tree.iter_nodes_named(b"/", b"virtio_mmio");
+        assert!(
+            nodes.is_some(),
+            "Expected to find 'virtio_mmio' nodes under '/'"
+        );
+        let mut nodes = nodes.unwrap();
+
+        let mut unit_addresses = Vec::new();
+
+        while let Some(node_item) = nodes.next() {
+            if let Some(unit_addr) = node_item.unit_address {
+                let unit_addr_str = std::str::from_utf8(unit_addr).unwrap();
+                unit_addresses.push(unit_addr_str.to_string());
+
+                // Check properties
+                let mut found_compatible = false;
+                for (name, value) in node_item.properties {
+                    if name == b"compatible" {
+                        if let Value::StringList(ss) = value {
+                            assert!(
+                                ss.contains(b"virtio,mmio"),
+                                "Expected 'compatible' to contain 'virtio,mmio'"
+                            );
+                            found_compatible = true;
+                        }
+                    }
+                }
+                assert!(
+                    found_compatible,
+                    "Expected to find 'compatible' property in 'virtio_mmio' node"
+                );
+            } else {
+                panic!("Expected 'virtio_mmio' node to have a unit address");
+            }
+        }
+
+        // Check the number of 'virtio_mmio' nodes
+        assert_eq!(
+            unit_addresses.len(),
+            32,
+            "Expected 32 'virtio_mmio' nodes under '/'"
+        );
+
+        // Check that unit addresses increment correctly
+        let expected_unit_addresses = (0..32)
+            .map(|i| format!("a{:06x}", 0x00_0000 + i * 0x200))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            unit_addresses, expected_unit_addresses,
+            "Unit addresses do not match expected values"
+        );
+    }
+
+    #[test]
+    fn test_iter_nodes_named_v2m() {
+        let tree = test_tree();
+        let nodes = tree.iter_nodes_named(b"/intc@8000000", b"v2m");
+        assert!(
+            nodes.is_some(),
+            "Expected to find 'v2m' nodes under '/intc@8000000'"
+        );
+        let mut nodes = nodes.unwrap();
+
+        let node_item = nodes.next();
+        assert!(
+            node_item.is_some(),
+            "Expected at least one 'v2m' node under '/intc@8000000'"
+        );
+
+        let node_item = node_item.unwrap();
+
+        if let Some(unit_addr) = node_item.unit_address {
+            let unit_addr_str = std::str::from_utf8(unit_addr).unwrap();
+            assert_eq!(
+                unit_addr_str, "8020000",
+                "Unexpected unit address for 'v2m' node"
+            );
+
+            // Check properties
+            let mut found_compatible = false;
+            for (name, value) in node_item.properties {
+                if name == b"compatible" {
+                    if let Value::StringList(ss) = value {
+                        assert!(
+                            ss.contains(b"arm,gic-v2m-frame"),
+                            "Expected 'compatible' to contain 'arm,gic-v2m-frame'"
+                        );
+                        found_compatible = true;
+                    }
+                }
+            }
+            assert!(
+                found_compatible,
+                "Expected to find 'compatible' property in 'v2m' node"
+            );
+        } else {
+            panic!("Expected 'v2m' node to have a unit address");
+        }
+
+        // Ensure there are no additional 'v2m' nodes under '/intc@8000000'
+        assert!(
+            nodes.next().is_none(),
+            "Expected only one 'v2m' node under '/intc@8000000'"
+        );
     }
 }

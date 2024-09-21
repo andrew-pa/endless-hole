@@ -16,9 +16,30 @@ fn pad_end_4b(num_bytes: usize) -> usize {
 }
 
 /// Iterator over tree tokens in a device tree blob.
+#[derive(Clone)]
 pub struct FlattenedTreeIter<'dt> {
     pub(super) dt: &'dt super::DeviceTree<'dt>,
     pub(super) current_offset: usize,
+}
+
+impl<'dt> FlattenedTreeIter<'dt> {
+    /// Skips over a node and all its children in the flattened tree iterator.
+    /// Assumes that the iterator has just yielded a [`fdt::Token::StartNode`] for the node to be skiped.
+    pub fn skip_node(&mut self) {
+        let mut depth = 1;
+        for token in self {
+            match token {
+                fdt::Token::StartNode(_) => depth += 1,
+                fdt::Token::EndNode => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                fdt::Token::Property { .. } => {}
+            }
+        }
+    }
 }
 
 impl<'dt> Iterator for FlattenedTreeIter<'dt> {
@@ -221,5 +242,89 @@ impl<'a, 'dt> Iterator for RegistersIter<'a, 'dt> {
         }
 
         Some((address, size))
+    }
+}
+
+/// An iterator over nodes with a specific name under a given path.
+pub struct NodesNamedIter<'dt, 'query> {
+    pub(super) cur: FlattenedTreeIter<'dt>,
+    pub(super) depth: usize,
+    pub(super) node_name: &'query [u8],
+    pub(super) parent_address_cells: u32,
+    pub(super) parent_size_cells: u32,
+}
+
+/// Represents a node with its unit address and properties iterator.
+pub struct NodeItem<'dt> {
+    /// The unit address of the node (the part after '@' in the node name), if any.
+    pub unit_address: Option<&'dt [u8]>,
+    /// An iterator over the properties of the node.
+    pub properties: NodePropertyIter<'dt>,
+}
+
+impl<'dt, 'query> Iterator for NodesNamedIter<'dt, 'query> {
+    type Item = NodeItem<'dt>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while let Some(token) = self.cur.next() {
+            match token {
+                fdt::Token::StartNode(full_name) => {
+                    self.depth += 1;
+
+                    let (name, unit_address) = split_node_name(full_name);
+                    if name == self.node_name {
+                        // Clone the iterator at this point for the properties iterator.
+                        let props_cur = self.cur.clone();
+                        let parent_address_cells = self.parent_address_cells;
+                        let parent_size_cells = self.parent_size_cells;
+                        // Skip this node and its children in the main iterator.
+                        self.cur.skip_node();
+                        self.depth -= 1;
+                        // Create the properties iterator.
+                        let props_iter = NodePropertyIter {
+                            cur: props_cur,
+                            depth: 1,
+                            parent_address_cells,
+                            parent_size_cells,
+                        };
+                        // Return the node item.
+                        return Some(NodeItem {
+                            unit_address,
+                            properties: props_iter,
+                        });
+                    }
+
+                    // Skip this node and its children.
+                    self.cur.skip_node();
+                    self.depth -= 1;
+                }
+                fdt::Token::EndNode => {
+                    self.depth -= 1;
+                    if self.depth == 0 {
+                        return None;
+                    }
+                }
+                fdt::Token::Property { name, data } => {
+                    // Update address and size cells if necessary.
+                    match name {
+                        b"#address-cells" => self.parent_address_cells = BigEndian::read_u32(data),
+                        b"#size-cells" => self.parent_size_cells = BigEndian::read_u32(data),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// Splits a node's full name into the node name and unit address.
+fn split_node_name(full_name: &[u8]) -> (&[u8], Option<&[u8]>) {
+    if let Some(pos) = full_name.iter().position(|&c| c == b'@') {
+        let name = &full_name[..pos];
+        let unit_address = Some(&full_name[pos + 1..]);
+        (name, unit_address)
+    } else {
+        (full_name, None)
     }
 }
