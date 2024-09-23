@@ -195,6 +195,15 @@ impl<'dt> Value<'dt> {
             None
         }
     }
+
+    /// If the value is of type `reg`, extract the value as [`Registers`].
+    pub fn into_reg(self) -> Option<Registers<'dt>> {
+        if let Self::Reg(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
 }
 
 /// A device tree blob in memory.
@@ -227,6 +236,14 @@ impl DeviceTree<'_> {
         };
         let buf = slice::from_raw_parts(ptr, header.total_size() as usize);
         Self::from_bytes_and_header(buf, header)
+    }
+
+    /// Returns the (start, length in bytes) memory region that is occupied by the device tree blob.
+    pub fn memory_region(&self) -> (*mut u8, usize) {
+        (
+            self.header.buf.as_ptr() as _,
+            self.header.total_size() as usize,
+        )
     }
 
     /// Create a [`DeviceTree`] that parses the blob present in `buf`.
@@ -346,6 +363,7 @@ impl DeviceTree<'_> {
     /// # Returns
     ///
     /// An iterator over `NodeItem`, each containing the `unit-address` and properties iterator.
+    /// Returns None if the `path` was not even found in the tree.
     #[must_use]
     pub fn iter_nodes_named<'q>(
         &self,

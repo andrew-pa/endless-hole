@@ -13,8 +13,9 @@ core::arch::global_asm!(core::include_str!("./start.S"));
 mod running_image;
 mod uart;
 
-use core::fmt::Write as _;
+use core::fmt::Write;
 
+use itertools::Itertools;
 use kernel_core::{
     memory::{BuddyPageAllocator, HeapAllocator, PhysicalPointer},
     platform::device_tree::{DeviceTree, Value as DTValue},
@@ -35,20 +36,47 @@ static ALLOCATOR: HeapAllocator<'static, BuddyPageAllocator> = HeapAllocator::ne
 /// - the global physical page allocator
 /// - the MMU and the kernel page tables
 /// - the Rust heap
-fn init_memory(dt: &DeviceTree<'_>) {
+fn init_memory(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     // create page allocator
-    let page_size = todo!();
-    let memory_start = todo!();
-    let memory_length = todo!();
-    let reserved_regions = todo!();
+    let page_size = 0x1000;
+    let memory_node = dt
+        .iter_nodes_named(b"/", b"memory")
+        .expect("root")
+        .exactly_one()
+        .expect("device tree has memory node");
+    let memory_range = memory_node
+        .properties
+        .clone()
+        .find(|(name, _)| name == b"reg")
+        .and_then(|(_, v)| v.into_reg())
+        .expect("memory node has reg property")
+        .iter()
+        .exactly_one()
+        .expect("memory has exactly one reg range");
+    let reserved_regions = [
+        unsafe { running_image::memory_region() },
+        dt.memory_region(),
+    ];
+    writeln!(
+        uart,
+        "memory range = {memory_range:x?}, reserved = {reserved_regions:x?}"
+    )
+    .unwrap();
     let pa = PAGE_ALLOCATOR.call_once(|| unsafe {
-        BuddyPageAllocator::new(page_size, memory_start, memory_length, reserved_regions)
+        BuddyPageAllocator::new(
+            page_size,
+            PhysicalPointer::from(memory_range.0).into(),
+            memory_range.1,
+            reserved_regions.into_iter(),
+        )
     });
 
     // setup page tables
 
     // initialize kernel heap
     ALLOCATOR.init(pa);
+
+    writeln!(uart, "memory initialized").unwrap();
 }
 
 /// The main entry point for the kernel.
@@ -93,11 +121,11 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     }
 
     writeln!(&mut uart, "kernel memory region {:x?}", unsafe {
-        running_image::kernel_memory_region()
+        running_image::memory_region()
     })
     .unwrap();
 
-    init_memory(&device_tree);
+    init_memory(&device_tree, &mut uart);
 
     #[allow(clippy::empty_loop)]
     loop {}

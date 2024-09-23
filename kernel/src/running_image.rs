@@ -34,8 +34,8 @@ pub unsafe fn zero_bss_section() {
 /// # Safety
 /// The validity of the returned region depends entirely on the correctness of the linker, linker
 /// script and loader to make sure the marker symbols are defined in the correct places.
-pub unsafe fn kernel_memory_region() -> (*const u8, usize) {
-    let start = addr_of!(markers::__kernel_start);
+pub unsafe fn memory_region() -> (*mut u8, usize) {
+    let start = addr_of_mut!(markers::__kernel_start);
     let end = addr_of!(markers::__kernel_end);
     (start, end.offset_from(start) as usize)
 }

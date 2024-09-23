@@ -22,6 +22,14 @@ pub struct FlattenedTreeIter<'dt> {
     pub(super) current_offset: usize,
 }
 
+impl<'dt> core::fmt::Debug for FlattenedTreeIter<'dt> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FlattenedTreeIter")
+            .field("current_offset", &self.current_offset)
+            .finish()
+    }
+}
+
 impl<'dt> FlattenedTreeIter<'dt> {
     /// Skips over a node and all its children in the flattened tree iterator.
     /// Assumes that the iterator has just yielded a [`fdt::Token::StartNode`] for the node to be skiped.
@@ -87,6 +95,7 @@ impl<'dt> Iterator for FlattenedTreeIter<'dt> {
 }
 
 /// An iterator over reserved regions of memory.
+#[derive(Clone, Debug)]
 pub struct MemRegionIter<'dt> {
     data: &'dt [u8],
     current_offset: usize,
@@ -120,6 +129,7 @@ impl<'dt> Iterator for MemRegionIter<'dt> {
 }
 
 /// Iterator over strings in a [`super::StringList`].
+#[derive(Clone, Debug)]
 pub struct StringListIter<'dt> {
     pub(super) data: &'dt [u8],
     pub(super) current_offset: usize,
@@ -144,6 +154,7 @@ impl<'dt> Iterator for StringListIter<'dt> {
 }
 
 /// Iterator over properties of a single node in the tree.
+#[derive(Clone, Debug)]
 pub struct NodePropertyIter<'a> {
     pub(super) cur: FlattenedTreeIter<'a>,
     pub(super) depth: usize,
@@ -207,6 +218,7 @@ impl<'a> Iterator for NodePropertyIter<'a> {
 
 /// An iterator over the (address, length) pairs contained in this array of device register regions.
 /// Constructed by a [`super::Registers`].
+#[derive(Clone, Debug)]
 pub struct RegistersIter<'a, 'dt> {
     pub(super) regs: &'a Registers<'dt>,
     pub(super) offset: usize,
@@ -246,6 +258,7 @@ impl<'a, 'dt> Iterator for RegistersIter<'a, 'dt> {
 }
 
 /// An iterator over nodes with a specific name under a given path.
+#[derive(Clone, Debug)]
 pub struct NodesNamedIter<'dt, 'query> {
     pub(super) cur: FlattenedTreeIter<'dt>,
     pub(super) depth: usize,
@@ -255,6 +268,7 @@ pub struct NodesNamedIter<'dt, 'query> {
 }
 
 /// Represents a node with its unit address and properties iterator.
+#[derive(Clone, Debug)]
 pub struct NodeItem<'dt> {
     /// The unit address of the node (the part after '@' in the node name), if any.
     pub unit_address: Option<&'dt [u8]>,

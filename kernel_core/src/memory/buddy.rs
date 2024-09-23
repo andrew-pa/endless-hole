@@ -21,7 +21,7 @@ struct FreeHeader {
 ///
 /// `MAX_ORDER` is the largest power of two block of pages that will be managed by the allocator.
 #[allow(clippy::module_name_repetitions)]
-pub struct BuddyPageAllocator<const MAX_ORDER: usize = 10> {
+pub struct BuddyPageAllocator<const MAX_ORDER: usize = 12> {
     base_addr: *mut u8,
     end_addr: *mut u8,
     page_size: usize,
@@ -71,7 +71,7 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
             }
             let mut block_start = NonNull::new(region_start.add(start_alignment_padding)).unwrap();
             let mut remaining_bytes = region_length;
-            let mut order = MAX_ORDER;
+            let mut order = MAX_ORDER - 1;
             loop {
                 let block_len = (1 << order) * page_size;
                 if remaining_bytes >= block_len {
