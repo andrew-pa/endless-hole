@@ -6,7 +6,11 @@ use snafu::Snafu;
 mod buddy;
 pub use buddy::BuddyPageAllocator;
 
-pub mod heap;
+mod heap;
+pub use heap::HeapAllocator;
+
+pub mod subtract_ranges;
+pub use subtract_ranges::subtract_ranges;
 
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///

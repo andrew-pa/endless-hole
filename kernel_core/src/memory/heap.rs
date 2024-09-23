@@ -6,6 +6,8 @@ use core::{
     sync::atomic::{AtomicPtr, Ordering},
 };
 
+use spin::once::Once;
+
 use super::PageAllocator;
 
 #[repr(C)]
@@ -25,7 +27,7 @@ struct AllocatedHeader {
 /// The allocator uses a basic free list algorithm.
 #[allow(clippy::module_name_repetitions)]
 pub struct HeapAllocator<'pa, PA> {
-    page_allocator: &'pa PA,
+    page_allocator: Once<&'pa PA>,
     free_list: AtomicPtr<FreeHeader>,
 }
 
@@ -33,9 +35,26 @@ impl<'pa, PA: PageAllocator> HeapAllocator<'pa, PA> {
     /// Create a new allocator that creates a heap in pages allocated by `page_allocator`.
     pub fn new(page_allocator: &'pa PA) -> Self {
         Self {
-            page_allocator,
+            page_allocator: Once::initialized(page_allocator),
             free_list: AtomicPtr::default(),
         }
+    }
+
+    /// Create a new allocator that has not yet been assigned to a page allocator.
+    /// Call [`Self::init`] to finish initialization.
+    ///
+    /// If used before initialization, the allocator will just return `null`.
+    #[must_use]
+    pub const fn new_uninit() -> Self {
+        Self {
+            page_allocator: Once::new(),
+            free_list: AtomicPtr::new(null_mut()),
+        }
+    }
+
+    /// Finish initializing an allocator constructed with [`Self::new_uninit`] by providing a page allocator.
+    pub fn init(&self, page_allocator: &'pa PA) {
+        self.page_allocator.call_once(|| page_allocator);
     }
 
     unsafe fn try_remove_fit(&self, desired_size: usize) -> Option<NonNull<FreeHeader>> {
@@ -159,15 +178,18 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
 
             (block_size, block)
         } else {
+            let Some(pa) = self.page_allocator.poll() else {
+                return null_mut();
+            };
             let page_count = required_block_size
-                .div_ceil(self.page_allocator.page_size())
+                .div_ceil(pa.page_size())
                 .max(MIN_PAGE_ALLOCATION);
             assert!(
-                layout.align() <= self.page_allocator.page_size(),
+                layout.align() <= pa.page_size(),
                 "layout alignments greater than a page are unsupported, layout={layout:?}"
             );
-            if let Ok(pages) = self.page_allocator.allocate(page_count) {
-                (page_count * self.page_allocator.page_size(), pages.cast())
+            if let Ok(pages) = pa.allocate(page_count) {
+                (page_count * pa.page_size(), pages.cast())
             } else {
                 return null_mut();
             }
