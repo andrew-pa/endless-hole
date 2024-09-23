@@ -197,6 +197,7 @@ impl<'dt> Value<'dt> {
     }
 
     /// If the value is of type `reg`, extract the value as [`Registers`].
+    #[must_use]
     pub fn into_reg(self) -> Option<Registers<'dt>> {
         if let Self::Reg(v) = self {
             Some(v)
@@ -239,9 +240,10 @@ impl DeviceTree<'_> {
     }
 
     /// Returns the (start, length in bytes) memory region that is occupied by the device tree blob.
+    #[must_use]
     pub fn memory_region(&self) -> (*mut u8, usize) {
         (
-            self.header.buf.as_ptr() as _,
+            self.header.buf.as_ptr().cast_mut(),
             self.header.total_size() as usize,
         )
     }
@@ -647,7 +649,7 @@ mod tests {
 
         let mut unit_addresses = Vec::new();
 
-        while let Some(node_item) = nodes.next() {
+        for node_item in nodes {
             if let Some(unit_addr) = node_item.unit_address {
                 let unit_addr_str = std::str::from_utf8(unit_addr).unwrap();
                 unit_addresses.push(unit_addr_str.to_string());
@@ -683,7 +685,7 @@ mod tests {
 
         // Check that unit addresses increment correctly
         let expected_unit_addresses = (0..32)
-            .map(|i| format!("a{:06x}", 0x00_0000 + i * 0x200))
+            .map(|i| format!("a{:06x}", i * 0x200))
             .collect::<Vec<_>>();
 
         assert_eq!(

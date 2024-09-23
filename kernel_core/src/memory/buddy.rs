@@ -45,7 +45,7 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     ///
     /// The memory region provided must be entirely valid memory that is safe to dereference, live for the lifetime of the allocator and not be shared
     /// outside of the allocator.
-    /// Additionally the excluded_regions must be contained within the overall memory region, see [`subtract_ranges`] for details.
+    /// Additionally the `excluded_regions` must be contained within the overall memory region, see [`subtract_ranges`] for details.
     pub unsafe fn new(
         page_size: usize,
         memory_start: *mut u8,
@@ -337,7 +337,7 @@ mod tests {
         let total_pages = 512;
         let total_size = total_pages * page_size;
         let layout = Layout::from_size_align(total_size, page_size).unwrap();
-        let memory = unsafe { std::alloc::alloc(layout.clone()) };
+        let memory = unsafe { std::alloc::alloc(layout) };
         assert!(!memory.is_null());
 
         (
@@ -355,7 +355,7 @@ mod tests {
         let total_pages = 513;
         let total_size = total_pages * page_size;
         let layout = Layout::from_size_align(total_size, page_size).unwrap();
-        let memory = unsafe { std::alloc::alloc(layout.clone()) };
+        let memory = unsafe { std::alloc::alloc(layout) };
         assert!(!memory.is_null());
 
         (

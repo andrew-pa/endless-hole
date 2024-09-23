@@ -126,7 +126,7 @@ mod tests {
             paste::paste!{
                 mod [<$allocator_name:snake:lower _implements_page_allocator>] {
                     use test_case::test_case;
-                    use crate::memory::{PageAllocator, Error};
+                    use $crate::memory::{PageAllocator, Error};
                     use super::*;
                     // Test the page size is consistent
                     #[test]

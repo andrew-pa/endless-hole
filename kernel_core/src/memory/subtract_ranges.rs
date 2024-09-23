@@ -70,27 +70,22 @@ where
             // Load the next sub-range if needed.
             if self.current_subrange.is_none() {
                 // Load the next sub-range.
-                self.current_subrange = loop {
-                    match self.ranges.next() {
-                        Some((start_ptr, len)) => {
-                            let start = start_ptr as usize;
-                            let end = start.saturating_add(len);
-                            let sub_start = start.max(self.whole_start);
-                            let sub_end = end.min(self.whole_end);
-                            if sub_start >= sub_end {
-                                // Sub-range is outside the whole range or empty, skip it.
-                                continue;
-                            } else if sub_end <= self.current_pos {
-                                // Sub-range ends before current position, skip it.
-                                continue;
-                            } else {
-                                // Valid sub-range found.
-                                break Some((sub_start, sub_end));
-                            }
-                        }
-                        None => break None, // No more sub-ranges.
+                self.current_subrange = self.ranges.find_map(|(start_ptr, len)| {
+                    let start = start_ptr as usize;
+                    let end = start.saturating_add(len);
+                    let sub_start = start.max(self.whole_start);
+                    let sub_end = end.min(self.whole_end);
+                    if sub_start >= sub_end {
+                        // Sub-range is outside the whole range or empty, skip it.
+                        None
+                    } else if sub_end <= self.current_pos {
+                        // Sub-range ends before current position, skip it.
+                        None
+                    } else {
+                        // Valid sub-range found.
+                        Some((sub_start, sub_end))
                     }
-                };
+                });
             }
 
             if let Some((sub_start, sub_end)) = self.current_subrange {
@@ -102,23 +97,18 @@ where
                     self.current_pos = sub_start; // Move current position to sub_start
                                                   // Do not advance subrange, as we have not processed it yet.
                     return Some((result_start as *mut u8, len));
-                } else {
-                    // current_pos >= sub_start
-                    self.current_pos = sub_end; // Skip over the sub-range.
-                    self.current_subrange = None; // Prepare to load next sub-range.
-                    continue;
                 }
+
+                // current_pos >= sub_start
+                self.current_pos = sub_end; // Skip over the sub-range.
+                self.current_subrange = None; // Prepare to load next sub-range.
             } else {
                 // No more sub-ranges, output the remaining range.
                 let result_start = self.current_pos;
                 let result_end = self.whole_end;
                 let len = result_end - result_start;
                 self.current_pos = self.whole_end;
-                if len > 0 {
-                    return Some((result_start as *mut u8, len));
-                } else {
-                    return None;
-                }
+                return (len > 0).then_some((result_start as *mut u8, len));
             }
         }
         None
