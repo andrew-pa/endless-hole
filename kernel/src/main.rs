@@ -6,15 +6,18 @@
 #![no_main]
 #![deny(missing_docs)]
 
+extern crate alloc;
+
 core::arch::global_asm!(core::include_str!("./start.S"));
 
-mod bss;
+mod memory;
+mod running_image;
 mod uart;
 
-use core::fmt::Write as _;
+use core::fmt::Write;
 
 use kernel_core::{
-    memory::PhysicalPointer,
+    memory::{PageAllocator, PhysicalPointer},
     platform::device_tree::{DeviceTree, Value as DTValue},
 };
 
@@ -30,7 +33,7 @@ use kernel_core::{
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     unsafe {
-        bss::zero_bss_section();
+        running_image::zero_bss_section();
     }
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
@@ -58,6 +61,20 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     {
         writeln!(&mut uart, "Board model: {board_model:?}").unwrap();
     }
+
+    writeln!(&mut uart, "kernel memory region {:x?}", unsafe {
+        running_image::memory_region()
+    })
+    .unwrap();
+
+    memory::init(&device_tree, &mut uart);
+
+    writeln!(
+        &mut uart,
+        "page size = {}",
+        memory::page_allocator().page_size()
+    )
+    .unwrap();
 
     #[allow(clippy::empty_loop)]
     loop {}
