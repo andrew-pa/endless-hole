@@ -1,4 +1,19 @@
 //! Memory managment algorithms and policies.
+//!
+//! # Pointers and Memory Addresses
+//! The kernel has a plethora of different types of things that are memory addresses.
+//! This table details each of these types in order of safety/abstraction.
+//! Using the type-system to keep these straight helps improve code readability and helps prevent subtle
+//! errors from assuming the address space of pointers.
+//!
+//! | Type                  | Dereference | Description |
+//! |-----------------------|-------------|-------------|
+//! | `&T`, `&mut T`        | Safe, trivial | Garden-variety Rust borrow, has the strongest safety gurantees. All of Rust's normal rules apply. References are always kernel-space addresses, since they can be dereferenced via the MMU while in EL1. |
+//! | `*const T`, `*mut T`  | Unsafe | Raw pointer with fewer safety gurantees from Rust. Still should be a kernel-space address that is dereferenceable via the MMU while in EL1. |
+//! | [`VirtualPointer<T>`], [`VirtualPointerMut<T>`] | If kernel-space: unsafe but trivial. Otherwise requires a manual page table lookup. | A virtual address in some address space. If the address space is the kernel's, then this is trivially convertable into a raw pointer. Otherwise a [`PageTable`] instance must be consulted to lookup the actual physical address that it is mapped to. |
+//! | [`VirtualAddress`]    | Same as `VirtualPointer` but must assume type. | An address in a virtual memory address space that is not associated with a type, but indicates some location. Assumed mutable for convenience. |
+//! | [`PhysicalPointer<T>`]| With conversion to kernel-space, unsafe. | A pointer to something in physical memory, i.e. the untranslated address space. Because the kernel virtual address space is identity mapped, these are trivially convertable to a [`VirtualPointer<T>`] or `*mut T`. All physical addresses are assumed to be mutable from the kernel's perspective. |
+//! | [`PhysicalAddress`]   | Same as `PhysicalPointer` but must assume type. | An address in the physical memory address space that is not associated with a type, but indicates some location.
 
 use core::{marker::PhantomData, ptr::NonNull};
 use snafu::Snafu;
@@ -12,17 +27,20 @@ pub use heap::HeapAllocator;
 mod subtract_ranges;
 pub use subtract_ranges::*;
 
+pub mod page_table;
+pub use page_table::PageTable;
+
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
 /// must be `0xffff` to select the kernel page tables, so a `*mut T` is not quite but very close to
 /// the physical address of the `T`.
-///
-/// The type `T` is the type of the object pointed to. The default of `()` is given because often
-/// physical addresses arise that don't point to concrete objects.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct PhysicalPointer<T = ()>(usize, PhantomData<*mut T>);
+pub struct PhysicalPointer<T>(usize, PhantomData<*mut T>);
+
+/// A physical 48-bit address that does not dereference to any particular type.
+pub type PhysicalAddress = PhysicalPointer<()>;
 
 impl<T> core::fmt::Debug for PhysicalPointer<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -67,6 +85,107 @@ impl<T> From<PhysicalPointer<T>> for *mut T {
     }
 }
 
+/// A 48-bit virtual address space pointer to a `T` in some address space.
+/// Analogous to a `*const T`.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VirtualPointer<T>(usize, PhantomData<T>);
+
+/// A 48-bit virtual address space pointer to a mutable `T` in some address space.
+/// Analogous to a `*mut T`.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VirtualPointerMut<T>(usize, PhantomData<T>);
+
+/// A virtual address space address in some address space.
+pub type VirtualAddress = VirtualPointerMut<()>;
+
+/// The error returned from `TryFrom` implementations if the `value` pointer is not in the kernel address space.
+pub struct NotInKernelAddressSpaceError;
+
+macro_rules! virtual_pointer_impl {
+    ($vpt:ident) => {
+        impl<T> $vpt<T> {
+            /// Returns true if this pointer is in the kernel address space.
+            #[must_use]
+            pub fn is_in_kernel_space(&self) -> bool {
+                self.0 & 0xffff_0000_0000_0000 == 0xffff_0000_0000_0000
+            }
+        }
+
+        impl<T> core::fmt::Debug for $vpt<T> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "v:0x{:x}", self.0)
+            }
+        }
+
+        impl<T> From<usize> for $vpt<T> {
+            fn from(value: usize) -> Self {
+                $vpt(value, PhantomData)
+            }
+        }
+
+        impl<T> From<$vpt<T>> for usize {
+            fn from(val: $vpt<T>) -> Self {
+                val.0
+            }
+        }
+
+        impl<T> From<*const T> for $vpt<T> {
+            fn from(value: *const T) -> Self {
+                $vpt(value as usize, PhantomData)
+            }
+        }
+
+        impl<T> TryFrom<$vpt<T>> for *const T {
+            type Error = NotInKernelAddressSpaceError;
+
+            fn try_from(value: $vpt<T>) -> core::result::Result<Self, Self::Error> {
+                value
+                    .is_in_kernel_space()
+                    .then_some(value.0 as _)
+                    .ok_or(NotInKernelAddressSpaceError)
+            }
+        }
+
+        impl<T> From<PhysicalPointer<T>> for $vpt<T> {
+            fn from(value: PhysicalPointer<T>) -> Self {
+                Self(value.0 | 0xffff_0000_0000_0000, PhantomData)
+            }
+        }
+
+        impl<T> TryFrom<$vpt<T>> for PhysicalPointer<T> {
+            type Error = NotInKernelAddressSpaceError;
+
+            fn try_from(value: $vpt<T>) -> core::result::Result<Self, Self::Error> {
+                value
+                    .is_in_kernel_space()
+                    .then_some(PhysicalPointer::from(value.0 & 0x0000_ffff_ffff_ffff))
+                    .ok_or(NotInKernelAddressSpaceError)
+            }
+        }
+    };
+}
+virtual_pointer_impl!(VirtualPointer);
+virtual_pointer_impl!(VirtualPointerMut);
+
+impl<T> From<*mut T> for VirtualPointerMut<T> {
+    fn from(value: *mut T) -> Self {
+        VirtualPointerMut(value as usize, PhantomData)
+    }
+}
+
+impl<T> TryFrom<VirtualPointerMut<T>> for *mut T {
+    type Error = NotInKernelAddressSpaceError;
+
+    fn try_from(value: VirtualPointerMut<T>) -> core::result::Result<Self, Self::Error> {
+        value
+            .is_in_kernel_space()
+            .then_some(value.0 as _)
+            .ok_or(NotInKernelAddressSpaceError)
+    }
+}
+
 /// Errors that arise due to memory related operations.
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -82,7 +201,8 @@ type Result<T> = core::result::Result<T, Error>;
 
 /// A memory allocator that provides pages of physical memory.
 ///
-/// Implementers of this trait must provide internal synchronization.
+/// Implementers of this trait must provide internal synchronization and each associated function
+/// should be re-entrant.
 pub trait PageAllocator {
     /// The size in bytes of one page.
     ///
@@ -101,8 +221,6 @@ pub trait PageAllocator {
 
     /// Free the pages pointed to by `pages` that points to a region of `num_pages`.
     /// This pointer must have been returned at some point from a call to [`PageAllocator::allocate`] that allocated exactly `num_pages`.
-    ///
-    // TODO: what happens if two threads free the same block??
     ///
     /// # Errors
     /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
