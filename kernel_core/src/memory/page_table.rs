@@ -1,9 +1,6 @@
 //! Page table API.
 
-use core::{
-    num::{NonZero, NonZeroUsize},
-    ptr::NonNull,
-};
+use core::num::{NonZero, NonZeroUsize};
 
 use bitfield::BitRange;
 use snafu::{ResultExt as _, Snafu};
@@ -237,11 +234,9 @@ impl<
                         .parent
                         .page_allocator
                         .allocate_zeroed(1)
-                        .context(AllocatorSnafu)?
-                        .cast()
-                        .as_ptr();
-                    *entry = Entry::for_table(PhysicalAddress::from(next_table));
-                    Ok(next_table.cast())
+                        .context(AllocatorSnafu)?;
+                    *entry = Entry::for_table(next_table);
+                    Ok(next_table.cast().into())
                 } else {
                     Err(Error::NotMapped { address })
                 }
@@ -321,12 +316,8 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// # Errors
     /// - Returns an error if the page allocator fails to allocate the root table.
     pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
-        Ok(Self {
-            page_allocator,
-            page_size: page_allocator.page_size(),
-            entries_per_page: usize::from(page_allocator.page_size()) / size_of::<Entry>(),
-            root: page_allocator.allocate_zeroed(1)?.cast().as_ptr(),
-        })
+        let root = page_allocator.allocate_zeroed(1)?;
+        unsafe { Ok(Self::from_existing(page_allocator, root)) }
     }
 
     /// Convert existing page tables in memory into a [`PageTables`] instance.
@@ -522,7 +513,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             }
         }
         self.page_allocator
-            .free(NonNull::new(table.cast()).unwrap(), 1)
+            .free(PhysicalAddress::from(table.cast()), 1)
             .unwrap();
     }
 }

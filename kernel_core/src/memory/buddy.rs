@@ -9,7 +9,7 @@ use snafu::{ensure, OptionExt as _};
 
 use crate::memory::{subtract_ranges, InvalidSizeSnafu, OutOfMemorySnafu, UnknownPtrSnafu};
 
-use super::{Error, PageAllocator, PageSize};
+use super::{Error, PageAllocator, PageSize, PhysicalAddress};
 
 #[repr(C)]
 struct FreeHeader {
@@ -257,7 +257,7 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
         self.page_size
     }
 
-    fn allocate(&self, num_pages: usize) -> core::result::Result<NonNull<u8>, Error> {
+    fn allocate(&self, num_pages: usize) -> Result<PhysicalAddress, Error> {
         ensure!(num_pages > 0, InvalidSizeSnafu);
 
         let block_size = num_pages
@@ -276,14 +276,15 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
 
         let block = self.split_block_to_size(free_block, actual_order, order);
 
-        Ok(block.cast())
+        Ok(PhysicalAddress::from(block.as_ptr().cast()))
     }
 
-    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> core::result::Result<(), Error> {
-        let block = pages.cast();
+    fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error> {
+        let pages_ptr: *mut () = pages.into();
+        let block = NonNull::new(pages_ptr.cast()).context(UnknownPtrSnafu)?;
         ensure!(num_pages > 0, InvalidSizeSnafu);
         ensure!(
-            pages.as_ptr() >= self.base_addr && pages.as_ptr() < self.end_addr,
+            pages_ptr.cast() >= self.base_addr && pages_ptr.cast() < self.end_addr,
             UnknownPtrSnafu
         );
 

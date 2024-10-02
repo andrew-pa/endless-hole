@@ -189,7 +189,10 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
                 "layout alignments greater than a page are unsupported, layout={layout:?}"
             );
             if let Ok(pages) = pa.allocate(page_count) {
-                (page_count * pa.page_size(), pages.cast())
+                (
+                    page_count * pa.page_size(),
+                    NonNull::new(pages.cast().into()).unwrap(),
+                )
             } else {
                 return null_mut();
             }
