@@ -9,7 +9,7 @@ use snafu::{ensure, OptionExt as _};
 
 use crate::memory::{subtract_ranges, InvalidSizeSnafu, OutOfMemorySnafu, UnknownPtrSnafu};
 
-use super::PageAllocator;
+use super::{Error, PageAllocator, PageSize};
 
 #[repr(C)]
 struct FreeHeader {
@@ -24,7 +24,7 @@ struct FreeHeader {
 pub struct BuddyPageAllocator<const MAX_ORDER: usize = 12> {
     base_addr: *mut u8,
     end_addr: *mut u8,
-    page_size: usize,
+    page_size: PageSize,
     free_blocks: [AtomicPtr<FreeHeader>; MAX_ORDER],
 }
 
@@ -47,13 +47,14 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     /// outside of the allocator.
     /// Additionally the `excluded_regions` must be contained within the overall memory region, see [`subtract_ranges()`] for details.
     pub unsafe fn new(
-        page_size: usize,
+        page_size: PageSize,
         memory_start: *mut u8,
         memory_length: usize,
         excluded_regions: impl Iterator<Item = (*mut u8, usize)>,
     ) -> Self {
-        assert!(memory_start.is_aligned_to(page_size));
-        assert_eq!(memory_length % page_size, 0);
+        let page_len = usize::from(page_size);
+        assert!(memory_start.is_aligned_to(page_len));
+        assert_eq!(memory_length % page_len, 0);
 
         let allocator = Self {
             base_addr: memory_start,
@@ -65,15 +66,15 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
         for (region_start, region_length) in
             subtract_ranges((memory_start, memory_length), excluded_regions)
         {
-            let start_alignment_padding = region_start.align_offset(page_size);
-            if region_length < page_size || region_length - start_alignment_padding < page_size {
+            let start_alignment_padding = region_start.align_offset(page_len);
+            if region_length < page_len || region_length - start_alignment_padding < page_len {
                 continue;
             }
             let mut block_start = NonNull::new(region_start.add(start_alignment_padding)).unwrap();
             let mut remaining_bytes = region_length;
             let mut order = MAX_ORDER - 1;
             loop {
-                let block_len = (1 << order) * page_size;
+                let block_len = (1 << order) * page_len;
                 if remaining_bytes >= block_len {
                     allocator.push_free(order, block_start.cast());
                     remaining_bytes -= block_len;
@@ -124,7 +125,7 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     unsafe fn push_free(&self, order: usize, mut block: NonNull<FreeHeader>) {
         #[cfg(test)]
         std::println!("push_free {order} {block:x?}");
-        assert!(block.is_aligned_to(self.page_size));
+        assert!(block.is_aligned_to(usize::from(self.page_size)));
         let mut head = self.free_blocks[order].load(Ordering::Acquire);
         loop {
             block.as_mut().next_block.store(head, Ordering::Relaxed);
@@ -252,11 +253,11 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
 }
 
 impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
-    fn page_size(&self) -> usize {
+    fn page_size(&self) -> PageSize {
         self.page_size
     }
 
-    fn allocate(&self, num_pages: usize) -> super::Result<NonNull<u8>> {
+    fn allocate(&self, num_pages: usize) -> core::result::Result<NonNull<u8>, Error> {
         ensure!(num_pages > 0, InvalidSizeSnafu);
 
         let block_size = num_pages
@@ -278,7 +279,7 @@ impl<const MAX_ORDER: usize> PageAllocator for BuddyPageAllocator<MAX_ORDER> {
         Ok(block.cast())
     }
 
-    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> super::Result<()> {
+    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> core::result::Result<(), Error> {
         let block = pages.cast();
         ensure!(num_pages > 0, InvalidSizeSnafu);
         ensure!(
@@ -333,10 +334,10 @@ mod tests {
     }
 
     fn setup_allocator() -> (TestContext, BuddyPageAllocator) {
-        let page_size = 4096;
+        let page_size = PageSize::FourKiB;
         let total_pages = 512;
         let total_size = total_pages * page_size;
-        let layout = Layout::from_size_align(total_size, page_size).unwrap();
+        let layout = Layout::from_size_align(total_size, usize::from(page_size)).unwrap();
         let memory = unsafe { std::alloc::alloc(layout) };
         assert!(!memory.is_null());
 
@@ -351,10 +352,10 @@ mod tests {
     }
 
     fn setup_allocator_with_gap() -> (TestContext, BuddyPageAllocator) {
-        let page_size = 4096;
+        let page_size = PageSize::FourKiB;
         let total_pages = 513;
         let total_size = total_pages * page_size;
-        let layout = Layout::from_size_align(total_size, page_size).unwrap();
+        let layout = Layout::from_size_align(total_size, usize::from(page_size)).unwrap();
         let memory = unsafe { std::alloc::alloc(layout) };
         assert!(!memory.is_null());
 

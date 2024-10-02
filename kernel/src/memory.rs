@@ -8,7 +8,7 @@ use crate::running_image;
 use core::fmt::Write;
 use itertools::Itertools as _;
 use kernel_core::{
-    memory::{BuddyPageAllocator, HeapAllocator, PageAllocator, PhysicalPointer},
+    memory::{BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PhysicalPointer},
     platform::device_tree::DeviceTree,
 };
 use spin::once::Once;
@@ -23,7 +23,7 @@ static ALLOCATOR: HeapAllocator<'static, BuddyPageAllocator> = HeapAllocator::ne
 /// Initialize the memory subsystem.
 pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     // create page allocator
-    let page_size = 0x1000;
+    let page_size = PageSize::FourKiB;
     let memory_node = dt
         .iter_nodes_named(b"/", b"memory")
         .expect("root")

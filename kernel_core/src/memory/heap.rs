@@ -182,10 +182,10 @@ unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
                 return null_mut();
             };
             let page_count = required_block_size
-                .div_ceil(pa.page_size())
+                .div_ceil(pa.page_size().into())
                 .max(MIN_PAGE_ALLOCATION);
             assert!(
-                layout.align() <= pa.page_size(),
+                layout.align() <= usize::from(pa.page_size()),
                 "layout alignments greater than a page are unsupported, layout={layout:?}"
             );
             if let Ok(pages) = pa.allocate(page_count) {
@@ -261,7 +261,7 @@ mod tests {
     use super::*;
 
     fn create_page_allocator() -> MockPageAllocator {
-        MockPageAllocator::new(4096, 512)
+        MockPageAllocator::new(crate::memory::PageSize::FourKiB, 512)
     }
 
     fn allocate_batch<A: GlobalAlloc>(allocator: &A, layout: Layout, size: usize) -> Vec<*mut u8> {

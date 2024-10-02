@@ -15,7 +15,7 @@
 //! | [`PhysicalPointer<T>`]| With conversion to kernel-space, unsafe. | A pointer to something in physical memory, i.e. the untranslated address space. Because the kernel virtual address space is identity mapped, these are trivially convertable to a [`VirtualPointer<T>`] or `*mut T`. All physical addresses are assumed to be mutable from the kernel's perspective. |
 //! | [`PhysicalAddress`]   | Same as `PhysicalPointer` but must assume type. | An address in the physical memory address space that is not associated with a type, but indicates some location.
 
-use core::{marker::PhantomData, ptr::NonNull};
+use core::{marker::PhantomData, num::NonZeroUsize, ptr::NonNull};
 use snafu::Snafu;
 
 mod buddy;
@@ -188,7 +188,7 @@ macro_rules! virtual_pointer_impl {
         impl<T> TryFrom<$vpt<T>> for *const T {
             type Error = NotInKernelAddressSpaceError;
 
-            fn try_from(value: $vpt<T>) -> core::result::Result<Self, Self::Error> {
+            fn try_from(value: $vpt<T>) -> Result<Self, Self::Error> {
                 value
                     .is_in_kernel_space()
                     .then_some(value.0 as _)
@@ -205,7 +205,7 @@ macro_rules! virtual_pointer_impl {
         impl<T> TryFrom<$vpt<T>> for PhysicalPointer<T> {
             type Error = NotInKernelAddressSpaceError;
 
-            fn try_from(value: $vpt<T>) -> core::result::Result<Self, Self::Error> {
+            fn try_from(value: $vpt<T>) -> Result<Self, Self::Error> {
                 value
                     .is_in_kernel_space()
                     .then_some(PhysicalPointer::from(value.0 & 0x0000_ffff_ffff_ffff))
@@ -226,7 +226,7 @@ impl<T> From<*mut T> for VirtualPointerMut<T> {
 impl<T> TryFrom<VirtualPointerMut<T>> for *mut T {
     type Error = NotInKernelAddressSpaceError;
 
-    fn try_from(value: VirtualPointerMut<T>) -> core::result::Result<Self, Self::Error> {
+    fn try_from(value: VirtualPointerMut<T>) -> Result<Self, Self::Error> {
         value
             .is_in_kernel_space()
             .then_some(value.0 as _)
@@ -245,17 +245,66 @@ pub enum Error {
     UnknownPtr,
 }
 
-type Result<T> = core::result::Result<T, Error>;
+/// The size of a single memory page.
+/// Defined to be equal to the size in bytes of the page.
+///
+/// There are only a fixed number of supported values because the hardware only supports a few configurations.
+#[derive(Eq, PartialEq, Clone, Copy, Debug)]
+#[repr(u32)]
+pub enum PageSize {
+    /// A page is 4 kibibytes (2^12 bytes).
+    FourKiB = 0x1000,
+    /// A page is 16 kibibytes (2^14 bytes).
+    SixteenKiB = 0x4000,
+}
+
+impl From<usize> for PageSize {
+    fn from(value: usize) -> Self {
+        match value {
+            0x1000 => PageSize::FourKiB,
+            0x4000 => PageSize::SixteenKiB,
+            _ => panic!("unsupported page size {value}"),
+        }
+    }
+}
+
+impl From<PageSize> for usize {
+    fn from(value: PageSize) -> Self {
+        value as usize
+    }
+}
+
+impl From<PageSize> for NonZeroUsize {
+    fn from(value: PageSize) -> Self {
+        unsafe { NonZeroUsize::new_unchecked(value as usize) }
+    }
+}
+
+impl core::ops::Mul<usize> for PageSize {
+    type Output = usize;
+
+    fn mul(self, rhs: usize) -> Self::Output {
+        (self as usize) * rhs
+    }
+}
+
+impl core::ops::Mul<PageSize> for usize {
+    type Output = usize;
+
+    fn mul(self, rhs: PageSize) -> Self::Output {
+        self * (rhs as usize)
+    }
+}
 
 /// A memory allocator that provides pages of physical memory.
 ///
 /// Implementers of this trait must provide internal synchronization and each associated function
 /// should be re-entrant.
 pub trait PageAllocator {
-    /// The size in bytes of one page.
+    /// The size of one page in this allocator.
     ///
     /// This value must remain the same throughout the lifetime of the allocator.
-    fn page_size(&self) -> usize;
+    fn page_size(&self) -> PageSize;
 
     /// Allocate `num_pages` of memory, returning a pointer to the beginning which will be page-aligned.
     ///
@@ -265,7 +314,7 @@ pub trait PageAllocator {
     /// # Errors
     /// - [`Error::OutOfMemory`] if there is not enough memory to allocate `num_pages`.
     /// - [`Error::InvalidSize`] if `num_pages` is zero.
-    fn allocate(&self, num_pages: usize) -> Result<NonNull<u8>>;
+    fn allocate(&self, num_pages: usize) -> Result<NonNull<u8>, Error>;
 
     /// Allocate `num_pages` of memory, returning a pointer to the beginning which will be page-aligned.
     /// Every byte of the pages will be set to zero.
@@ -276,7 +325,7 @@ pub trait PageAllocator {
     /// # Errors
     /// - [`Error::OutOfMemory`] if there is not enough memory to allocate `num_pages`.
     /// - [`Error::InvalidSize`] if `num_pages` is zero.
-    fn allocate_zeroed(&self, num_pages: usize) -> Result<NonNull<u8>> {
+    fn allocate_zeroed(&self, num_pages: usize) -> Result<NonNull<u8>, Error> {
         let pages = self.allocate(num_pages)?;
         unsafe {
             core::ptr::write_bytes(pages.as_ptr(), 0, num_pages * self.page_size());
@@ -289,7 +338,7 @@ pub trait PageAllocator {
     ///
     /// # Errors
     /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
-    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> Result<()>;
+    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> Result<(), Error>;
 }
 
 #[cfg(test)]
@@ -298,7 +347,7 @@ mod tests {
 
     use crate::memory::{InvalidSizeSnafu, OutOfMemorySnafu, UnknownPtrSnafu};
 
-    use super::PageAllocator;
+    use super::{Error, PageAllocator, PageSize};
 
     /// Generate tests to ensure correct implementation of the [`PageAllocator`] trait.
     ///
@@ -316,7 +365,6 @@ mod tests {
                     fn page_size_consistency() {
                         let (cx, allocator) = $setup_allocator();
                         let page_size = allocator.page_size();
-                        assert!(page_size > 0, "Page size should be greater than 0");
                         // Allocating multiple times should return the same page size
                         for _ in 0..10 {
                             assert_eq!(allocator.page_size(), page_size, "Page size should remain constant");
@@ -337,7 +385,7 @@ mod tests {
                         let page_size = allocator.page_size();
                         let ptr = allocator.allocate(num_pages).expect("Failed to allocate multiple pages");
                         // Ensure the memory address is aligned to the page size
-                        assert!(ptr.is_aligned_to(page_size),  "Pointer should be page-aligned");
+                        assert!(ptr.is_aligned_to(page_size.into()),  "Pointer should be page-aligned");
                         allocator.free(ptr, num_pages).expect("Failed to free allocated pages");
                         $cleanup_allocator(cx, allocator);
                     }
@@ -602,7 +650,7 @@ mod tests {
     ///
     /// This allocator uses the system allocator to allocate the underlying memory.
     pub struct MockPageAllocator {
-        page_size: usize,
+        page_size: PageSize,
         max_pages: usize,
         allocated_pages: Arc<Mutex<HashMap<*mut u8, usize>>>, // Map from pointer to number of pages
         total_allocated: Arc<Mutex<usize>>,                   // Tracks total allocated pages
@@ -612,8 +660,7 @@ mod tests {
 
     impl MockPageAllocator {
         /// Create a new `MockAllocator` with the given page size and maximum number of pages.
-        pub fn new(page_size: usize, max_pages: usize) -> Self {
-            assert!(page_size > 0);
+        pub fn new(page_size: PageSize, max_pages: usize) -> Self {
             assert!(max_pages > 0);
             MockPageAllocator {
                 page_size,
@@ -630,11 +677,11 @@ mod tests {
     }
 
     impl PageAllocator for MockPageAllocator {
-        fn page_size(&self) -> usize {
+        fn page_size(&self) -> PageSize {
             self.page_size
         }
 
-        fn allocate(&self, num_pages: usize) -> super::Result<NonNull<u8>> {
+        fn allocate(&self, num_pages: usize) -> Result<NonNull<u8>, Error> {
             ensure!(num_pages > 0, InvalidSizeSnafu);
 
             let mut total_allocated = self.total_allocated.lock().unwrap();
@@ -646,11 +693,10 @@ mod tests {
             );
 
             // Calculate the total size in bytes for the allocation
-            let total_size = self
-                .page_size
+            let total_size = usize::from(self.page_size)
                 .checked_mul(num_pages)
                 .context(OutOfMemorySnafu)?;
-            let layout = Layout::from_size_align(total_size, self.page_size).unwrap();
+            let layout = Layout::from_size_align(total_size, self.page_size.into()).unwrap();
 
             unsafe {
                 // Allocate the memory
@@ -669,7 +715,7 @@ mod tests {
             }
         }
 
-        fn free(&self, pages: NonNull<u8>, num_pages: usize) -> super::Result<()> {
+        fn free(&self, pages: NonNull<u8>, num_pages: usize) -> Result<(), Error> {
             let num_pages_recorded = {
                 let mut allocated_pages = self.allocated_pages.lock().unwrap();
 
@@ -682,8 +728,8 @@ mod tests {
             assert_eq!(num_pages, num_pages_recorded);
 
             // Deallocate the memory
-            let total_size = self.page_size * num_pages_recorded;
-            let layout = Layout::from_size_align(total_size, self.page_size).unwrap();
+            let total_size = usize::from(self.page_size) * num_pages_recorded;
+            let layout = Layout::from_size_align(total_size, self.page_size.into()).unwrap();
 
             unsafe {
                 std::alloc::dealloc(pages.as_ptr(), layout);
@@ -698,7 +744,7 @@ mod tests {
     }
 
     fn setup_allocator() -> ((), MockPageAllocator) {
-        ((), MockPageAllocator::new(4096, 1024))
+        ((), MockPageAllocator::new(PageSize::FourKiB, 1024))
     }
 
     fn cleanup_allocator(_cx: (), allocator: MockPageAllocator) {

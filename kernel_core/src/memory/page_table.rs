@@ -8,7 +8,8 @@ use core::{
 use bitfield::BitRange;
 use snafu::{ResultExt as _, Snafu};
 
-use super::{PageAllocator, PhysicalAddress, VirtualAddress};
+use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
+use PageSize::{FourKiB, SixteenKiB};
 
 /// Defines required cache coherence for memory shared across different cores.
 #[derive(Clone, Default)]
@@ -186,32 +187,6 @@ fn index_for_level(address: VirtualAddress, level: u8, page_size: PageSize) -> u
     usize::try_from(ix).unwrap()
 }
 
-#[derive(Eq, PartialEq, Clone, Copy, Debug)]
-enum PageSize {
-    FourKiB,
-    SixteenKiB,
-}
-use PageSize::{FourKiB, SixteenKiB};
-
-impl From<usize> for PageSize {
-    fn from(value: usize) -> Self {
-        match value {
-            0x1000 => PageSize::FourKiB,
-            0x4000 => PageSize::SixteenKiB,
-            _ => panic!("unsupported page size"),
-        }
-    }
-}
-
-impl From<PageSize> for usize {
-    fn from(value: PageSize) -> Self {
-        match value {
-            FourKiB => 0x1000,
-            SixteenKiB => 0x4000,
-        }
-    }
-}
-
 fn pages_per_entry(level: u8, page_size: PageSize) -> usize {
     match page_size {
         FourKiB => match level {
@@ -348,8 +323,8 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
         Ok(Self {
             page_allocator,
-            page_size: page_allocator.page_size().into(),
-            entries_per_page: page_allocator.page_size() / size_of::<Entry>(),
+            page_size: page_allocator.page_size(),
+            entries_per_page: usize::from(page_allocator.page_size()) / size_of::<Entry>(),
             root: page_allocator.allocate_zeroed(1)?.cast().as_ptr(),
         })
     }
@@ -368,11 +343,11 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     ) -> Self {
         let root: *mut Entry = root_table_address.cast().into();
         assert!(!root.is_null());
-        assert!(root.is_aligned_to(page_allocator.page_size()));
+        assert!(root.is_aligned_to(usize::from(page_allocator.page_size())));
         Self {
             page_allocator,
-            page_size: page_allocator.page_size().into(),
-            entries_per_page: page_allocator.page_size() / size_of::<Entry>(),
+            page_size: page_allocator.page_size(),
+            entries_per_page: usize::from(page_allocator.page_size()) / size_of::<Entry>(),
             root,
         }
     }
@@ -402,7 +377,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     #[must_use]
     pub fn block_length_in_bytes(&self, size: MapBlockSize) -> Option<NonZeroUsize> {
         self.block_length_in_pages(size)
-            .map(|s| unsafe { NonZero::new_unchecked(s.get() * self.page_allocator.page_size()) })
+            .map(|s| s.saturating_mul(NonZeroUsize::from(self.page_allocator.page_size())))
     }
 
     fn for_each_entry_of_size<F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>>(
@@ -564,9 +539,11 @@ mod tests {
 
     use test_case::test_matrix;
 
-    use crate::memory::{tests::MockPageAllocator, PageAllocator, PhysicalAddress, VirtualAddress};
+    use crate::memory::{
+        tests::MockPageAllocator, PageAllocator, PageSize, PhysicalAddress, VirtualAddress,
+    };
 
-    use super::{MapBlockSize, MemoryProperties, PageTables};
+    use super::*;
 
     use MapBlockSize::*;
 
@@ -617,37 +594,37 @@ mod tests {
     }
 
     #[test_matrix(
-        0x1000,
+        FourKiB,
         Page,
         [1, 2, 7, 64, 67, 512, 521, 1024, 1031],
         [0x0, 0xab00000000, 0xab00001000, 0xab00100000, 0xab001ff000, 0xab00200000]
     )]
     #[test_matrix(
-        0x1000,
+        FourKiB,
         SmallBlock,
         [1, 2, 7, 64, 67, 512, 521, 1024, 1031],
         [0x0, 0xab00000000, 0xab00200000, 0xab20000000, 0xab3fe00000, 0xab40000000]
     )]
     #[test_matrix(
-        0x1000,
+        FourKiB,
         LargeBlock,
         [1, 2, 7, 64, 67/*, 512, 521, 1024, 1031*/],
         [0x0, 0x40000000, 0x4000000000, 0x7fc0000000, 0x8000000000]
     )]
     #[test_matrix(
-        0x4000,
+        SixteenKiB,
         Page,
         [1, 2, 7, 64, 67, 512, 521, 1024, 1031, 2048, 2053],
         [0x0, 0xfa00000000, 0xfa00004000, 0xfa01000000, 0xfa01ffc000, 0xfa02000000]
     )]
     #[test_matrix(
-        0x4000,
+        SixteenKiB,
         SmallBlock,
         [1, 2, 7, 64, 67, 512, 521, 1024, 1031, 2048, 2053],
         [0x0, 0xfa00_0000_0000, 0xfa00_0200_0000, 0xfa08_0000_0000, 0xfa0f_fe00_0000, 0xfa10_0000_0000]
     )]
     fn basic_map_unmap(
-        page_size: usize,
+        page_size: PageSize,
         block_size: MapBlockSize,
         count: usize,
         start_address: usize,
@@ -673,8 +650,8 @@ mod tests {
         pa.end_check();
     }
 
-    #[test_matrix([0x1000, 0x4000])]
-    fn offset_physical_address_of(page_size: usize) {
+    #[test_matrix([FourKiB, SixteenKiB])]
+    fn offset_physical_address_of(page_size: PageSize) {
         let pa = MockPageAllocator::new(page_size, 8);
         {
             let mut pt = PageTables::empty(&pa).unwrap();
@@ -694,9 +671,9 @@ mod tests {
         pa.end_check();
     }
 
-    #[test_matrix(0x1000, [Page, SmallBlock, LargeBlock])]
-    #[test_matrix(0x4000, [Page, SmallBlock])]
-    fn overlapping_map(page_size: usize, block_size: MapBlockSize) {
+    #[test_matrix(FourKiB, [Page, SmallBlock, LargeBlock])]
+    #[test_matrix(SixteenKiB, [Page, SmallBlock])]
+    fn overlapping_map(page_size: PageSize, block_size: MapBlockSize) {
         let pa = MockPageAllocator::new(page_size, 128);
         {
             let mut pt = PageTables::empty(&pa).unwrap();
@@ -740,9 +717,9 @@ mod tests {
 
     //TODO: map-unmap-map again
 
-    #[test_matrix(0x1000, [Page, SmallBlock, LargeBlock])]
-    #[test_matrix(0x4000, [Page, SmallBlock])]
-    fn partial_unmap_whole(page_size: usize, block_size: MapBlockSize) {
+    #[test_matrix(FourKiB, [Page, SmallBlock, LargeBlock])]
+    #[test_matrix(SixteenKiB, [Page, SmallBlock])]
+    fn partial_unmap_whole(page_size: PageSize, block_size: MapBlockSize) {
         let pa = MockPageAllocator::new(page_size, 128);
         {
             let mut pt = PageTables::empty(&pa).unwrap();
