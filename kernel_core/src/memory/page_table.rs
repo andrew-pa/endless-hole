@@ -279,6 +279,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             parent: &'s PageTables<'pa, PA>,
             end_level: u8,
             block_size_in_bytes: usize,
+            block_size_in_pages: usize,
             create_on_empty: bool,
             f: &'a mut F,
         }
@@ -302,11 +303,14 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                 assert!(count > 0);
                 let start_index = index_for_level(virtual_start, level, self.parent.page_size);
                 if level < self.end_level {
-                    let number_of_blocks_per_entry_at_this_level = match self.parent.page_size {
-                        FourKiB => self
-                            .parent
-                            .entries_per_page
-                            .pow(self.end_level as u32 - level as u32),
+                    let number_of_pages_per_entry_at_this_level = match self.parent.page_size {
+                        FourKiB => match level {
+                            0 => 512 * 512 * 512,
+                            1 => 512 * 512,
+                            2 => 512,
+                            3 => 1,
+                            _ => panic!("invalid level {level}"),
+                        },
                         // the level 0 table only has two entries
                         SixteenKiB => match level {
                             0 => 2 * 2048 * 2048,
@@ -315,7 +319,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                             3 => 1,
                             _ => panic!("invalid level {level}"),
                         },
-                    };
+                    } / self.block_size_in_pages;
                     let mut index = start_index;
                     let mut num_blocks = 0;
                     while num_blocks < count {
@@ -343,9 +347,9 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                         let start_at_next_level =
                             index_for_level(next_vs, level + 1, self.parent.page_size);
                         let actual_blocks_in_next_level = (count - num_blocks)
-                            .min(number_of_blocks_per_entry_at_this_level - start_at_next_level);
+                            .min(number_of_pages_per_entry_at_this_level - start_at_next_level);
                         #[cfg(test)]
-                        std::println!("L{level}.{index}/{num_blocks}; count={count}, #b/e={number_of_blocks_per_entry_at_this_level}, next_vs={next_vs:?}, next_ps={next_ps:?}, next_table={next_table:?}, next_start={start_at_next_level} #b={actual_blocks_in_next_level}, (entry = {entry:x?}), {:?}", self.parent.page_size);
+                        std::println!("L{level}.{index}/{num_blocks}; count={count}, #b/e={number_of_pages_per_entry_at_this_level}, next_vs={next_vs:?}, next_ps={next_ps:?}, next_table={next_table:?}, next_start={start_at_next_level} #b={actual_blocks_in_next_level}, (entry = {entry:x?}), {:?}", self.parent.page_size);
                         self.step(
                             level + 1,
                             next_table,
@@ -390,6 +394,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             parent: self,
             end_level,
             block_size_in_bytes: self.block_length_in_bytes(size).unwrap().get(),
+            block_size_in_pages: self.block_length_in_pages(size).unwrap().get(),
             create_on_empty,
             f: &mut f,
         }
@@ -489,11 +494,8 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     fn drop_table(&mut self, level: u8, table: *mut Entry) {
         for i in 0..self.entries_per_page {
             let entry = unsafe { table.add(i).read() };
-            match entry.decode(level) {
-                DecodedEntry::Table(next_table) => {
-                    self.drop_table(level + 1, next_table.cast().into());
-                }
-                _ => {}
+            if let DecodedEntry::Table(next_table) = entry.decode(level) {
+                self.drop_table(level + 1, next_table.cast().into());
             }
         }
         self.page_allocator
@@ -725,7 +727,7 @@ mod tests {
             );
             check_mapping(
                 &pt,
-                (0xaaaa_0000_0000 + block_len).into(),
+                (0xaaaa_0000_0000 + 2 * block_len).into(),
                 (0xeeee_0000_0000 + 2 * block_len).into(),
                 1,
                 block_size,
