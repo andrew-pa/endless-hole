@@ -71,7 +71,7 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 
     writeln!(
         &mut uart,
-        "page size = {}",
+        "page size = {:?}",
         memory::page_allocator().page_size()
     )
     .unwrap();

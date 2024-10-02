@@ -645,7 +645,7 @@ mod tests {
             nodes.is_some(),
             "Expected to find 'virtio_mmio' nodes under '/'"
         );
-        let mut nodes = nodes.unwrap();
+        let nodes = nodes.unwrap();
 
         let mut unit_addresses = Vec::new();
 

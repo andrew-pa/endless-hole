@@ -11,5 +11,6 @@ The `justfile` defines several recipes to help you build and test the system. He
 * `check`: Checks formatting, types, and lints for the Rust code.
 * `make-kernel-image`: Creates a U-Boot image for the kernel.
 * `run-qemu`: Runs the system in QEMU for testing.
+* `test`: Runs all of the unit tests.
 
 See the `just` documentation for more info about running tasks.
