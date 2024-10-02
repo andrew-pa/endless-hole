@@ -1,57 +1,741 @@
 //! Page table API.
 
-use super::{PhysicalAddress, VirtualAddress};
+use core::{
+    num::{NonZero, NonZeroUsize},
+    ptr::{null_mut, NonNull},
+};
 
-/// The properties given to a particular page mapping.
-#[derive(Clone)]
-pub struct PageProperties {}
+use bitfield::BitRange;
+use snafu::Snafu;
+
+use super::{PageAllocator, PhysicalAddress, VirtualAddress};
+
+/// Defines required cache coherence for memory shared across different cores.
+#[derive(Clone, Default)]
+pub enum Shareability {
+    /// The memory is not shared, each core can have its own cache.
+    Local,
+    /// The memory is shared between cores in the same cluster, so inner caches must stay coherent.
+    Cluster,
+    #[default]
+    /// The memory is shared between all cores in the system, so all (inner and outer) caches must stay coherent.
+    Global,
+}
+
+impl Shareability {
+    #[inline]
+    const fn encode(&self) -> u64 {
+        match self {
+            Shareability::Local => 0b00,
+            Shareability::Global => 0b10,
+            Shareability::Cluster => 0b11,
+        }
+    }
+}
+
+/// Types of caching available for memory operations.
+#[derive(Clone, Default)]
+pub enum MemoryKind {
+    /// "Normal" cached memory.
+    #[default]
+    Normal,
+    /// Device memory that is uncached with strict access order (no gathering, reordering or early
+    /// write acknowledgement). Ideal for memory mapped I/O.
+    Device,
+}
+
+impl MemoryKind {
+    #[inline]
+    const fn encode(&self) -> u64 {
+        match self {
+            MemoryKind::Device => 0b000,
+            MemoryKind::Normal => 0b001,
+        }
+    }
+}
+
+/// The properties given to a particular memory mapping.
+#[derive(Clone, Default)]
+pub struct MemoryProperties {
+    /// Determines cachability and load/store requirements.
+    pub kind: MemoryKind,
+    /// Enables access to this memory from user space (EL0).
+    pub user_space_access: bool,
+    /// Enable writes to this memory.
+    pub writable: bool,
+    /// Instructions can be fetched from this memory.
+    pub executable: bool,
+    /// Required cache coherence across cores for this memory.
+    pub sharability: Shareability,
+}
+
+impl MemoryProperties {
+    fn encode(&self) -> u64 {
+        (self.executable as u64) << 54
+            | self.sharability.encode() << 8
+            | (self.writable as u64) << 7
+            | (self.user_space_access as u64) << 6
+            | self.kind.encode() << 2
+    }
+}
 
 /// The size of the granule used in a mapping operation.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum MapBlockSize {
     /// Maps by single pages.
     Page,
-    /// Maps by small blocks in the Level 2 table. (2MiB with 4KiB pages)
+    /// Maps by small blocks in the Level 2 table.
+    /// (2MiB with 4KiB pages, 32MiB with 16KiB pages, 512MiB with 64KiB pages)
     SmallBlock,
-    /// Maps by big blocks in the Level 1 table. (1GiB with 4KiB pages)
-    BigBlock,
+    /// Maps by big blocks in the Level 1 table.
+    /// (1GiB with 4KiB pages, not available with 16KiB or 64KiB pages)
+    LargeBlock,
 }
 
 /// Errors that could arise in page table operations.
+#[derive(Debug, Eq, PartialEq, Snafu)]
 pub enum Error {}
 
-/// A page table data structure in memory.
-pub struct PageTable<'pa, PA> {
-    page_allocator: &'pa PA,
+#[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
+#[repr(transparent)]
+struct Entry(u64);
+
+enum DecodedEntry {
+    Empty,
+    Table(PhysicalAddress),
+    Block(PhysicalAddress),
+    Page(PhysicalAddress),
 }
 
-impl<'pa, PA> PageTable<'pa, PA> {
-    /// Map a region of virtual addresses to a region of physical addresses in this page table with
+impl Entry {
+    /// Constructs a page table entry that is unoccupied.
+    fn empty() -> Self {
+        Self(0)
+    }
+
+    /// Construct a page table entry pointing to a lower table.
+    fn for_table(table_address: PhysicalAddress, properties: &MemoryProperties) -> Self {
+        let address = usize::from(table_address);
+        assert_eq!(address & 0xfff, 0);
+        Self(0b11 | (address as u64))
+    }
+
+    /// Construct a page table entry pointing to a memory block.
+    fn for_block(base_address: PhysicalAddress, properties: &MemoryProperties) -> Self {
+        let address = usize::from(base_address);
+        assert_eq!(address & 0xfff, 0);
+        Self(0b01 | (address as u64) | properties.encode() | (1 << 10/*access flag*/))
+    }
+
+    /// Construct a page table entry pointing to a memory page.
+    fn for_page(base_address: PhysicalAddress, properties: &MemoryProperties) -> Self {
+        let address = usize::from(base_address);
+        assert_eq!(address & 0xfff, 0);
+        Self(0b11 | (address as u64) | properties.encode() | (1 << 10/*access flag*/))
+    }
+
+    fn decode(&self, occuring_at_level: u8) -> DecodedEntry {
+        let address = PhysicalAddress::from((self.0 & 0x0000_ffff_ffff_f000) as usize);
+        match (occuring_at_level, self.0 & 0b11) {
+            (_, 0b00) => DecodedEntry::Empty,
+            (3, 0b11) => DecodedEntry::Page(address),
+            (_, 0b11) => DecodedEntry::Table(address),
+            (0..=2, 0b01) => DecodedEntry::Block(address),
+            (lvl, bits) => {
+                panic!("invalid page table entry type/valid: level={lvl}, entry={bits:b}")
+            }
+        }
+    }
+}
+
+#[inline]
+fn index_for_level(address: VirtualAddress, level: u8, page_size: PageSize) -> usize {
+    let (msb, lsb) = match (level, page_size) {
+        (4, FourKiB) => (11, 0),
+        (3, FourKiB) => (20, 12),
+        (2, FourKiB) => (29, 21),
+        (1, FourKiB) => (38, 30),
+        (0, FourKiB) => (47, 39),
+        (4, SixteenKiB) => (13, 0),
+        (3, SixteenKiB) => (24, 14),
+        (2, SixteenKiB) => (35, 25),
+        (1, SixteenKiB) => (46, 36),
+        (0, SixteenKiB) => (47, 47),
+        _ => panic!("unsupported page size"),
+    };
+    let addr = usize::from(address) as u64;
+    let ix: u64 = addr.bit_range(msb, lsb);
+    ix as usize
+}
+
+#[derive(Eq, PartialEq, Clone, Copy, Debug)]
+enum PageSize {
+    FourKiB,
+    SixteenKiB,
+}
+use PageSize::*;
+
+impl From<usize> for PageSize {
+    fn from(value: usize) -> Self {
+        match value {
+            0x1000 => PageSize::FourKiB,
+            0x4000 => PageSize::SixteenKiB,
+            _ => panic!("unsupported page size"),
+        }
+    }
+}
+
+impl From<PageSize> for usize {
+    fn from(value: PageSize) -> Self {
+        match value {
+            FourKiB => 0x1000,
+            SixteenKiB => 0x4000,
+        }
+    }
+}
+
+/// A page table data structure in memory.
+///
+/// This structure manages the entire tree of tables.
+pub struct PageTables<'pa, PA: PageAllocator> {
+    page_allocator: &'pa PA,
+    page_size: PageSize,
+    entries_per_page: usize,
+    root: *mut Entry,
+}
+
+impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
+    /// Create a new page tables structure that has no mappings.
+    pub fn empty(page_allocator: &'pa PA) -> Self {
+        Self {
+            page_allocator,
+            page_size: page_allocator.page_size().into(),
+            entries_per_page: page_allocator.page_size() / size_of::<Entry>(),
+            root: page_allocator.allocate_zeroed(1).unwrap().cast().as_ptr(),
+        }
+    }
+
+    /// Convert existing page tables in memory into a [`PageTables`] instance.
+    ///
+    /// # Safety
+    /// - The `root_table_address` must point to a valid root page table in memory.
+    /// - Any pages already in the tables must have come from `page_allocator`.
+    ///
+    /// # Panics
+    /// - If the root table address is null or not aligned to the size of a page.
+    pub unsafe fn from_existing(
+        page_allocator: &'pa PA,
+        root_table_address: PhysicalAddress,
+    ) -> Self {
+        let root: *mut Entry = root_table_address.cast().into();
+        assert!(!root.is_null());
+        assert!(root.is_aligned_to(page_allocator.page_size()));
+        Self {
+            page_allocator,
+            page_size: page_allocator.page_size().into(),
+            entries_per_page: page_allocator.page_size() / size_of::<Entry>(),
+            root,
+        }
+    }
+
+    /// Get the physical address of the root table.
+    #[must_use]
+    pub fn physical_address(&self) -> PhysicalAddress {
+        PhysicalAddress::from(self.root.cast())
+    }
+
+    /// Returns the length in pages of this block size.
+    /// Returns None if the block size is not supported in the current page size.
+    #[must_use]
+    pub fn block_length_in_pages(&self, size: MapBlockSize) -> Option<NonZeroUsize> {
+        match size {
+            MapBlockSize::Page => NonZero::new(1),
+            MapBlockSize::SmallBlock => NonZero::new(self.entries_per_page),
+            MapBlockSize::LargeBlock if self.page_size == FourKiB => {
+                NonZero::new(self.entries_per_page * self.entries_per_page)
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns the length in bytes of this block size (i.e. `block_length_in_pages() * page_size`).
+    /// Returns None if the block size is not supported in the current page size.
+    #[must_use]
+    pub fn block_length_in_bytes(&self, size: MapBlockSize) -> Option<NonZeroUsize> {
+        self.block_length_in_pages(size)
+            .map(|s| NonZero::new(s.get() * self.page_allocator.page_size()).unwrap())
+    }
+
+    fn for_each_entry_of_size<F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>>(
+        &self,
+        virtual_start: VirtualAddress,
+        physical_start: PhysicalAddress,
+        count: usize,
+        size: MapBlockSize,
+        create_on_empty: bool,
+        mut f: F,
+    ) -> Result<(), Error> {
+        struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
+            parent: &'s PageTables<'pa, PA>,
+            end_level: u8,
+            block_size_in_bytes: usize,
+            create_on_empty: bool,
+            f: &'a mut F,
+        }
+
+        impl<
+                'a,
+                's,
+                'pa,
+                PA: PageAllocator,
+                F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>,
+            > Walker<'a, 's, 'pa, PA, F>
+        {
+            fn step(
+                &mut self,
+                level: u8,
+                table_root: *mut Entry,
+                virtual_start: VirtualAddress,
+                physical_start: PhysicalAddress,
+                count: usize,
+            ) -> Result<(), Error> {
+                assert!(count > 0);
+                let start_index = index_for_level(virtual_start, level, self.parent.page_size);
+                if level < self.end_level {
+                    let number_of_blocks_per_entry_at_this_level = match self.parent.page_size {
+                        FourKiB => self
+                            .parent
+                            .entries_per_page
+                            .pow(self.end_level as u32 - level as u32),
+                        // the level 0 table only has two entries
+                        SixteenKiB => match level {
+                            0 => 2 * 2048 * 2048,
+                            1 => 2048 * 2048,
+                            2 => 2048,
+                            3 => 1,
+                            _ => panic!("invalid level {level}"),
+                        },
+                    };
+                    let mut index = start_index;
+                    let mut num_blocks = 0;
+                    while num_blocks < count {
+                        assert!(index < self.parent.entries_per_page);
+                        let entry =
+                            unsafe { table_root.add(index).as_mut().expect("table is non-null") };
+                        let byte_offset = num_blocks * self.block_size_in_bytes;
+                        let next_vs = virtual_start.byte_add(byte_offset);
+                        let next_ps = physical_start.byte_add(byte_offset);
+                        let next_table: *mut Entry = match entry.decode(level) {
+                            DecodedEntry::Empty => {
+                                if self.create_on_empty {
+                                    let next_table = self.parent.page_allocator.allocate_zeroed(1).unwrap().cast().as_ptr();
+                                    *entry = Entry::for_table(PhysicalAddress::from(next_table), &MemoryProperties::default());
+                                    next_table.cast()
+                                } else {
+                                    return Err(todo!("unexpected empty entry"))
+                                }
+                            },
+                            DecodedEntry::Table(table_pointer) => {
+                                table_pointer.cast().into()
+                            },
+                            DecodedEntry::Block(_) | DecodedEntry::Page(_) => panic!("cannot remap region previously mapped with blocks without first unmapping"),
+                        };
+                        let start_at_next_level =
+                            index_for_level(next_vs, level + 1, self.parent.page_size);
+                        let actual_blocks_in_next_level = (count - num_blocks)
+                            .min(number_of_blocks_per_entry_at_this_level - start_at_next_level);
+                        #[cfg(test)]
+                        std::println!("L{level}.{index}/{num_blocks}; count={count}, #b/e={number_of_blocks_per_entry_at_this_level}, next_vs={next_vs:?}, next_ps={next_ps:?}, next_table={next_table:?}, next_start={start_at_next_level} #b={actual_blocks_in_next_level}, (entry = {entry:x?}), {:?}", self.parent.page_size);
+                        self.step(
+                            level + 1,
+                            next_table,
+                            next_vs,
+                            next_ps,
+                            actual_blocks_in_next_level,
+                        )?;
+                        index += 1;
+                        num_blocks += actual_blocks_in_next_level;
+                    }
+                    Ok(())
+                } else {
+                    let entry_count = self.parent.entries_per_page;
+                    let end_index = start_index + count;
+                    #[cfg(test)]
+                    std::println!("L{level}.{start_index}..{end_index}; count={count}, vs={virtual_start:?}, ps={physical_start:?}");
+                    assert!(end_index <= entry_count, "start_index({start_index}) + count({count}) = end_index({end_index}) > entries_per_table({entry_count})");
+                    for i in 0..count {
+                        let addr = physical_start.byte_add(i * self.block_size_in_bytes);
+                        let entry_ptr = unsafe { table_root.add(start_index + i) };
+                        (self.f)(entry_ptr, addr)?;
+                    }
+                    Ok(())
+                }
+            }
+        }
+
+        let end_level = match size {
+            MapBlockSize::Page => 3,
+            MapBlockSize::SmallBlock => 2,
+            MapBlockSize::LargeBlock => {
+                if self.page_size == FourKiB {
+                    1
+                } else {
+                    panic!("large blocks not supported for >4KiB pages")
+                }
+            }
+        };
+
+        // TODO: we need to check for errors here before doing the actual mapping
+        Walker {
+            parent: self,
+            end_level,
+            block_size_in_bytes: self.block_length_in_bytes(size).unwrap().get(),
+            create_on_empty,
+            f: &mut f,
+        }
+        .step(0, self.root, virtual_start, physical_start, count)
+    }
+
+    /// Map a region of virtual addresses to a region of physical addresses in these page tables with
     /// the given `properties`.
     ///
     /// Both start pointers must be aligned to the `size` required alignment.
-    /// The region will be of `count * size.byte_length()` bytes.
+    /// The region will be of `count * block_length_in_pages(size) * page_size` bytes.
     pub fn map(
-        &self,
-        physical_start: PhysicalAddress,
+        &mut self,
         virtual_start: VirtualAddress,
+        physical_start: PhysicalAddress,
         count: usize,
         size: MapBlockSize,
-        properties: &PageProperties,
+        properties: &MemoryProperties,
     ) -> Result<(), Error> {
-        todo!()
+        self.for_each_entry_of_size(
+            virtual_start,
+            physical_start,
+            count,
+            size,
+            true,
+            |entry_ptr, addr| {
+                let entry = match size {
+                    MapBlockSize::Page => Entry::for_page(addr, properties),
+                    _ => Entry::for_block(addr, properties),
+                };
+                unsafe {
+                    entry_ptr.write(entry);
+                }
+                Ok(())
+            },
+        )
     }
 
-    /// Unmap a region of virtual addresses to a region of physical addresses in this page table.
+    /// Unmap a region of virtual addresses to a region of physical addresses in these page tables.
     pub fn unmap(
-        &self,
+        &mut self,
         virtual_start: VirtualAddress,
         count: usize,
         size: MapBlockSize,
     ) -> Result<(), Error> {
-        todo!()
+        self.for_each_entry_of_size(
+            virtual_start,
+            0.into(),
+            count,
+            size,
+            false,
+            |entry_ptr, _| {
+                unsafe {
+                    entry_ptr.write(Entry::empty());
+                }
+                Ok(())
+            },
+        )
+    }
+
+    /// Compute the physical address that these page tables map the virtual address `p` to.
+    /// Returns `None` if there is no mapping for this address.
+    #[must_use]
+    pub fn physical_address_of(&self, p: VirtualAddress) -> Option<PhysicalAddress> {
+        let mut level = 0;
+        let mut table = self.root;
+        while level <= 3 {
+            let index = index_for_level(p, level, self.page_size);
+            unsafe {
+                let entry_ptr = table.add(index);
+                match (*entry_ptr).decode(level) {
+                    DecodedEntry::Empty => return None,
+                    DecodedEntry::Table(table_ptr) => {
+                        table = table_ptr.cast().into();
+                        level += 1;
+                    }
+                    DecodedEntry::Block(block_base_ptr) | DecodedEntry::Page(block_base_ptr) => {
+                        let offset_mask = match (self.page_size, level) {
+                            (FourKiB, 3) => 0xfff,
+                            (FourKiB, 2) => 0x1f_ffff,
+                            (FourKiB, 1) => 0x3fff_ffff,
+                            (SixteenKiB, 3) => 0x3fff,
+                            (SixteenKiB, 2) => 0x1ff_ffff,
+                            (ps, level) => panic!("invalid level {level} at page size {ps:?}"),
+                        };
+                        let offset = usize::from(p) & offset_mask;
+                        #[cfg(test)]
+                        std::println!("p={p:?} block_base={block_base_ptr:?}, offset={offset:x?} (mask={offset_mask:x})");
+                        return Some(block_base_ptr.byte_add(offset));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn drop_table(&mut self, level: u8, table: *mut Entry) {
+        for i in 0..self.entries_per_page {
+            let entry = unsafe { table.add(i).read() };
+            match entry.decode(level) {
+                DecodedEntry::Table(next_table) => {
+                    self.drop_table(level + 1, next_table.cast().into());
+                }
+                _ => {}
+            }
+        }
+        self.page_allocator
+            .free(NonNull::new(table.cast()).unwrap(), 1)
+            .unwrap();
+    }
+}
+
+impl<'pa, PA: PageAllocator> Drop for PageTables<'pa, PA> {
+    fn drop(&mut self) {
+        self.drop_table(0, self.root);
     }
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use std::boxed::Box;
+
+    use test_case::test_matrix;
+
+    use crate::memory::{tests::MockPageAllocator, PageAllocator, PhysicalAddress, VirtualAddress};
+
+    use super::{MapBlockSize, MemoryProperties, PageTables};
+
+    use MapBlockSize::*;
+
+    fn check_mapping<PA: PageAllocator>(
+        pt: &PageTables<'_, PA>,
+        physical_start: PhysicalAddress,
+        virtual_start: VirtualAddress,
+        count: usize,
+        block_size: MapBlockSize,
+        mapped_or_unmapped: bool,
+    ) {
+        let page_size = pt.page_allocator.page_size();
+        let page_count = count * pt.block_length_in_pages(block_size).unwrap().get();
+        let pages_to_check: Box<dyn Iterator<Item = usize>> = if page_count > 2048 {
+            // there are too many pages to check them all
+            // we know the math is safe because page_count > 2
+            Box::new(
+                [
+                    0,
+                    1,
+                    page_count / 2 - 1,
+                    page_count / 2,
+                    page_count / 2 + 1,
+                    page_count - 2,
+                    page_count - 1,
+                ]
+                .into_iter(),
+            ) as _
+        } else {
+            Box::new((0..page_count).into_iter()) as _
+        };
+        for page_offset in pages_to_check {
+            let offset = page_size * page_offset;
+            let va = virtual_start.byte_add(offset);
+            let expected_phy = physical_start.byte_add(offset);
+            match (pt.physical_address_of(va), mapped_or_unmapped) {
+                (None, true) => {
+                    panic!("{va:?} should have been mapped to {expected_phy:?} but was unmapped")
+                }
+                (None, false) => {}
+                (Some(p), true) => assert_eq!(
+                    p, expected_phy,
+                    "{va:?} mapped to {p:?} expected {expected_phy:?}"
+                ),
+                (Some(p), false) => panic!("{va:?} mapped to {p:?} but should have been unmapped"),
+            }
+        }
+    }
+
+    #[test_matrix(
+        0x1000,
+        Page,
+        [1, 2, 7, 64, 67, 512, 521, 1024, 1031],
+        [0x0, 0xab00000000, 0xab00001000, 0xab00100000, 0xab001ff000, 0xab00200000]
+    )]
+    #[test_matrix(
+        0x1000,
+        SmallBlock,
+        [1, 2, 7, 64, 67, 512, 521, 1024, 1031],
+        [0x0, 0xab00000000, 0xab00200000, 0xab20000000, 0xab3fe00000, 0xab40000000]
+    )]
+    #[test_matrix(
+        0x1000,
+        LargeBlock,
+        [1, 2, 7, 64, 67/*, 512, 521, 1024, 1031*/],
+        [0x0, 0x40000000, 0x4000000000, 0x7fc0000000, 0x8000000000]
+    )]
+    #[test_matrix(
+        0x4000,
+        Page,
+        [1, 2, 7, 64, 67, 512, 521, 1024, 1031, 2048, 2053],
+        [0x0, 0xfa00000000, 0xfa00004000, 0xfa01000000, 0xfa01ffc000, 0xfa02000000]
+    )]
+    #[test_matrix(
+        0x4000,
+        SmallBlock,
+        [1, 2, 7, 64, 67, 512, 521, 1024, 1031, 2048, 2053],
+        [0x0, 0xfa00_0000_0000, 0xfa00_0200_0000, 0xfa08_0000_0000, 0xfa0f_fe00_0000, 0xfa10_0000_0000]
+    )]
+    fn basic_map_unmap(
+        page_size: usize,
+        block_size: MapBlockSize,
+        count: usize,
+        start_address: usize,
+    ) {
+        let pa = MockPageAllocator::new(page_size, 128);
+        {
+            let mut pt = PageTables::empty(&pa);
+            let start_address = VirtualAddress::from(start_address);
+            pt.map(
+                start_address,
+                0.into(),
+                count,
+                block_size,
+                &MemoryProperties::default(),
+            )
+            .expect("map range");
+            check_mapping(&pt, 0.into(), start_address, count, block_size, true);
+            pt.unmap(start_address, count, block_size)
+                .expect("unmap range");
+            check_mapping(&pt, 0.into(), start_address, count, block_size, false);
+            drop(pt);
+        }
+        pa.end_check();
+    }
+
+    #[test_matrix([0x1000, 0x4000])]
+    fn offset_physical_address_of(page_size: usize) {
+        let pa = MockPageAllocator::new(page_size, 8);
+        {
+            let mut pt = PageTables::empty(&pa);
+            pt.map(
+                0xff_0000.into(),
+                0xaaaa_0000.into(),
+                1,
+                Page,
+                &MemoryProperties::default(),
+            )
+            .expect("map page");
+            assert_eq!(
+                pt.physical_address_of(0xff_0033.into()),
+                Some(PhysicalAddress::from(0xaaaa_0033))
+            );
+        }
+        pa.end_check();
+    }
+
+    #[test_matrix(0x1000, [Page, SmallBlock, LargeBlock])]
+    #[test_matrix(0x4000, [Page, SmallBlock])]
+    fn overlapping_map(page_size: usize, block_size: MapBlockSize) {
+        let pa = MockPageAllocator::new(page_size, 128);
+        {
+            let mut pt = PageTables::empty(&pa);
+            let block_len = pt.block_length_in_bytes(block_size).unwrap().get();
+            pt.map(
+                0xeeee_0000_0000.into(),
+                0xaaaa_0000_0000.into(),
+                2,
+                block_size,
+                &MemoryProperties::default(),
+            )
+            .expect("map range");
+            pt.map(
+                (0xeeee_0000_0000 + block_len).into(),
+                0xbbbb_0000_0000.into(),
+                2,
+                block_size,
+                &MemoryProperties::default(),
+            )
+            .expect("map range");
+            check_mapping(
+                &pt,
+                0xaaaa_0000_0000.into(),
+                0xeeee_0000_0000.into(),
+                1,
+                block_size,
+                true,
+            );
+            check_mapping(
+                &pt,
+                0xbbbb_0000_0000.into(),
+                (0xeeee_0000_0000 + block_len).into(),
+                2,
+                block_size,
+                true,
+            );
+            drop(pt);
+        }
+        pa.end_check();
+    }
+
+    //TODO: map-unmap-map again
+
+    #[test_matrix(0x1000, [Page, SmallBlock, LargeBlock])]
+    #[test_matrix(0x4000, [Page, SmallBlock])]
+    fn partial_unmap_whole(page_size: usize, block_size: MapBlockSize) {
+        let pa = MockPageAllocator::new(page_size, 128);
+        {
+            let mut pt = PageTables::empty(&pa);
+            let block_len = pt.block_length_in_bytes(block_size).unwrap().get();
+            pt.map(
+                0xeeee_0000_0000.into(),
+                0xaaaa_0000_0000.into(),
+                3,
+                block_size,
+                &MemoryProperties::default(),
+            )
+            .expect("map range");
+            pt.unmap((0xeeee_0000_0000 + block_len).into(), 1, block_size)
+                .expect("unmap middle");
+            check_mapping(
+                &pt,
+                0xaaaa_0000_0000.into(),
+                0xeeee_0000_0000.into(),
+                1,
+                block_size,
+                true,
+            );
+            check_mapping(
+                &pt,
+                0.into(),
+                (0xeeee_0000_0000 + block_len).into(),
+                1,
+                block_size,
+                false,
+            );
+            check_mapping(
+                &pt,
+                (0xaaaa_0000_0000 + block_len).into(),
+                (0xeeee_0000_0000 + 2 * block_len).into(),
+                1,
+                block_size,
+                true,
+            );
+            drop(pt);
+        }
+        pa.end_check();
+    }
+    //TODO: if you map a block and then try to unmap a page in the block or try to remap a page in
+    //the block, what should happen? implementing this the obvious way is complex, but returning an
+    //error seems leaky.
+}

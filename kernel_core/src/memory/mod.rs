@@ -10,7 +10,7 @@
 //! |-----------------------|-------------|-------------|
 //! | `&T`, `&mut T`        | Safe, trivial | Garden-variety Rust borrow, has the strongest safety gurantees. All of Rust's normal rules apply. References are always kernel-space addresses, since they can be dereferenced via the MMU while in EL1. |
 //! | `*const T`, `*mut T`  | Unsafe | Raw pointer with fewer safety gurantees from Rust. Still should be a kernel-space address that is dereferenceable via the MMU while in EL1. |
-//! | [`VirtualPointer<T>`], [`VirtualPointerMut<T>`] | If kernel-space: unsafe but trivial. Otherwise requires a manual page table lookup. | A virtual address in some address space. If the address space is the kernel's, then this is trivially convertable into a raw pointer. Otherwise a [`PageTable`] instance must be consulted to lookup the actual physical address that it is mapped to. |
+//! | [`VirtualPointer<T>`], [`VirtualPointerMut<T>`] | If kernel-space: unsafe but trivial. Otherwise requires a manual page table lookup. | A virtual address in some address space. If the address space is the kernel's, then this is trivially convertable into a raw pointer. Otherwise a [`PageTables`] instance must be consulted to lookup the actual physical address that it is mapped to. |
 //! | [`VirtualAddress`]    | Same as `VirtualPointer` but must assume type. | An address in a virtual memory address space that is not associated with a type, but indicates some location. Assumed mutable for convenience. |
 //! | [`PhysicalPointer<T>`]| With conversion to kernel-space, unsafe. | A pointer to something in physical memory, i.e. the untranslated address space. Because the kernel virtual address space is identity mapped, these are trivially convertable to a [`VirtualPointer<T>`] or `*mut T`. All physical addresses are assumed to be mutable from the kernel's perspective. |
 //! | [`PhysicalAddress`]   | Same as `PhysicalPointer` but must assume type. | An address in the physical memory address space that is not associated with a type, but indicates some location.
@@ -28,7 +28,7 @@ mod subtract_ranges;
 pub use subtract_ranges::*;
 
 pub mod page_table;
-pub use page_table::PageTable;
+pub use page_table::PageTables;
 
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///
@@ -41,6 +41,30 @@ pub struct PhysicalPointer<T>(usize, PhantomData<*mut T>);
 
 /// A physical 48-bit address that does not dereference to any particular type.
 pub type PhysicalAddress = PhysicalPointer<()>;
+
+impl<T> PhysicalPointer<T> {
+    /// Offset this pointer forward by `count` number of `T`s.
+    #[inline]
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(self, count: usize) -> Self {
+        self.byte_add(count * size_of::<T>())
+    }
+
+    /// Offset this pointer forward by `count` bytes.
+    #[inline]
+    #[must_use]
+    pub fn byte_add(self, count: usize) -> Self {
+        Self(self.0 + count, PhantomData)
+    }
+
+    /// Cast this pointer from type `T` to type `U`.
+    #[inline]
+    #[must_use]
+    pub fn cast<U>(self) -> PhysicalPointer<U> {
+        PhysicalPointer(self.0, PhantomData)
+    }
+}
 
 impl<T> core::fmt::Debug for PhysicalPointer<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -81,7 +105,8 @@ impl<T> From<*mut T> for PhysicalPointer<T> {
 
 impl<T> From<PhysicalPointer<T>> for *mut T {
     fn from(val: PhysicalPointer<T>) -> Self {
-        (val.0 | 0xffff_0000_0000_0000) as _
+        val.0 as _
+        // (val.0 | 0xffff_0000_0000_0000) as _
     }
 }
 
@@ -107,9 +132,32 @@ macro_rules! virtual_pointer_impl {
     ($vpt:ident) => {
         impl<T> $vpt<T> {
             /// Returns true if this pointer is in the kernel address space.
+            #[inline]
             #[must_use]
             pub fn is_in_kernel_space(&self) -> bool {
                 self.0 & 0xffff_0000_0000_0000 == 0xffff_0000_0000_0000
+            }
+
+            /// Offset this pointer forward by `count` number of `T`s.
+            #[inline]
+            #[must_use]
+            #[allow(clippy::should_implement_trait)]
+            pub fn add(self, count: usize) -> Self {
+                self.byte_add(count * size_of::<T>())
+            }
+
+            /// Offset this pointer forward by `count` bytes.
+            #[inline]
+            #[must_use]
+            pub fn byte_add(self, count: usize) -> Self {
+                Self(self.0 + count, PhantomData)
+            }
+
+            /// Cast this pointer from type `T` to type `U`.
+            #[inline]
+            #[must_use]
+            pub fn cast<U>(self) -> $vpt<U> {
+                $vpt(self.0, PhantomData)
             }
         }
 
@@ -218,6 +266,23 @@ pub trait PageAllocator {
     /// - [`Error::OutOfMemory`] if there is not enough memory to allocate `num_pages`.
     /// - [`Error::InvalidSize`] if `num_pages` is zero.
     fn allocate(&self, num_pages: usize) -> Result<NonNull<u8>>;
+
+    /// Allocate `num_pages` of memory, returning a pointer to the beginning which will be page-aligned.
+    /// Every byte of the pages will be set to zero.
+    ///
+    /// The pointer is a valid kernel space pointer, but can be translated to a raw physical
+    /// address with [`PhysicalPointer`] if need be.
+    ///
+    /// # Errors
+    /// - [`Error::OutOfMemory`] if there is not enough memory to allocate `num_pages`.
+    /// - [`Error::InvalidSize`] if `num_pages` is zero.
+    fn allocate_zeroed(&self, num_pages: usize) -> Result<NonNull<u8>> {
+        let pages = self.allocate(num_pages)?;
+        unsafe {
+            core::ptr::write_bytes(pages.as_ptr(), 0, num_pages * self.page_size());
+        }
+        Ok(pages)
+    }
 
     /// Free the pages pointed to by `pages` that points to a region of `num_pages`.
     /// This pointer must have been returned at some point from a call to [`PageAllocator::allocate`] that allocated exactly `num_pages`.
@@ -557,6 +622,11 @@ mod tests {
                 total_allocated: Arc::new(Mutex::new(0)),
             }
         }
+
+        pub fn end_check(self) {
+            assert!(self.allocated_pages.lock().unwrap().is_empty());
+            assert_eq!(*self.total_allocated.lock().unwrap(), 0);
+        }
     }
 
     impl PageAllocator for MockPageAllocator {
@@ -632,8 +702,7 @@ mod tests {
     }
 
     fn cleanup_allocator(_cx: (), allocator: MockPageAllocator) {
-        assert!(allocator.allocated_pages.lock().unwrap().is_empty());
-        assert_eq!(*allocator.total_allocated.lock().unwrap(), 0);
+        allocator.end_check()
     }
 
     test_page_allocator!(MockPageAllocator, setup_allocator, cleanup_allocator);
