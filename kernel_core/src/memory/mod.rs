@@ -112,8 +112,15 @@ impl<T> From<*mut T> for PhysicalPointer<T> {
 
 impl<T> From<PhysicalPointer<T>> for *mut T {
     fn from(val: PhysicalPointer<T>) -> Self {
-        val.0 as _
-        // (val.0 | 0xffff_0000_0000_0000) as _
+        #[cfg(not(test))]
+        {
+            (val.0 | 0xffff_0000_0000_0000) as _
+        }
+        #[cfg(test)]
+        {
+            // HACK: Because the test environment is in user-space, we assume that physical pointers are actually untagged, but fit in the 48-bit space.
+            val.0 as _
+        }
     }
 }
 
@@ -257,12 +264,11 @@ pub enum Error {
 ///
 /// There are only a fixed number of supported values because the hardware only supports a few configurations.
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
-#[repr(u32)]
 pub enum PageSize {
     /// A page is 4 kibibytes (2^12 bytes).
-    FourKiB = 0x1000,
+    FourKiB,
     /// A page is 16 kibibytes (2^14 bytes).
-    SixteenKiB = 0x4000,
+    SixteenKiB,
 }
 
 impl From<usize> for PageSize {
@@ -277,13 +283,16 @@ impl From<usize> for PageSize {
 
 impl From<PageSize> for usize {
     fn from(value: PageSize) -> Self {
-        value as usize
+        match value {
+            PageSize::FourKiB => 0x1000,
+            PageSize::SixteenKiB => 0x4000,
+        }
     }
 }
 
 impl From<PageSize> for NonZeroUsize {
     fn from(value: PageSize) -> Self {
-        unsafe { NonZeroUsize::new_unchecked(value as usize) }
+        unsafe { NonZeroUsize::new_unchecked(usize::from(value)) }
     }
 }
 
@@ -291,7 +300,7 @@ impl core::ops::Mul<usize> for PageSize {
     type Output = usize;
 
     fn mul(self, rhs: usize) -> Self::Output {
-        (self as usize) * rhs
+        usize::from(self) * rhs
     }
 }
 
@@ -299,7 +308,7 @@ impl core::ops::Mul<PageSize> for usize {
     type Output = usize;
 
     fn mul(self, rhs: PageSize) -> Self::Output {
-        self * (rhs as usize)
+        self * usize::from(rhs)
     }
 }
 

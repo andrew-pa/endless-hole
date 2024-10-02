@@ -1,9 +1,9 @@
-//! Page table API.
+//! Page tables data structure.
 
 use core::num::{NonZero, NonZeroUsize};
 
 use bitfield::BitRange;
-use snafu::{ResultExt as _, Snafu};
+use snafu::{ensure, ResultExt as _, Snafu};
 
 use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
 use PageSize::{FourKiB, SixteenKiB};
@@ -110,6 +110,10 @@ pub enum Error {
         /// Cause of the error.
         source: super::Error,
     },
+    /// A mapping was requested that is too small or too large for the system.
+    InvalidCount,
+    /// Virtual address has the wrong tag value for the table.
+    InvalidTag,
 }
 
 #[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
@@ -305,9 +309,11 @@ impl<
 /// This structure manages the entire tree of tables.
 pub struct PageTables<'pa, PA: PageAllocator> {
     page_allocator: &'pa PA,
-    page_size: PageSize,
     entries_per_page: usize,
     root: *mut Entry,
+    page_size: PageSize,
+    /// true => pointers must have 0xffff tag, false => must have 0x0000 tag.
+    high_tag: bool,
 }
 
 impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
@@ -317,10 +323,11 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// - Returns an error if the page allocator fails to allocate the root table.
     pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
         let root = page_allocator.allocate_zeroed(1)?;
-        unsafe { Ok(Self::from_existing(page_allocator, root)) }
+        unsafe { Ok(Self::from_existing(page_allocator, root, false)) }
     }
 
     /// Convert existing page tables in memory into a [`PageTables`] instance.
+    /// If `high_tag` is true, these tables will be for mapping addresses starting with `0xffff`, i.e. the TTBR1 table.
     ///
     /// # Safety
     /// - The `root_table_address` must point to a valid root page table in memory.
@@ -331,6 +338,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     pub unsafe fn from_existing(
         page_allocator: &'pa PA,
         root_table_address: PhysicalAddress,
+        high_tag: bool,
     ) -> Self {
         let root: *mut Entry = root_table_address.cast().into();
         assert!(!root.is_null());
@@ -340,6 +348,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             page_size: page_allocator.page_size(),
             entries_per_page: usize::from(page_allocator.page_size()) / size_of::<Entry>(),
             root,
+            high_tag,
         }
     }
 
@@ -392,12 +401,22 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             }
         };
 
-        // TODO: we need to check for errors (bounds) here before doing the actual mapping
+        let block_size_in_pages = self.block_length_in_pages(size).unwrap().get();
+        // ensure that the size of the mapping is within range
+        // TODO: make this bound tighter
+        ensure!(
+            count > 0
+                && count
+                    .checked_mul(block_size_in_pages)
+                    .is_some_and(|x| x < (1 << 48)),
+            InvalidCountSnafu
+        );
+
         Walker {
             parent: self,
             end_level,
-            block_size_in_bytes: self.block_length_in_bytes(size).unwrap().get(),
-            block_size_in_pages: self.block_length_in_pages(size).unwrap().get(),
+            block_size_in_bytes: self.page_size * block_size_in_pages,
+            block_size_in_pages,
             create_on_empty,
             f: &mut f,
         }
@@ -411,6 +430,8 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// The region will be of `count * block_length_in_pages(size) * page_size` bytes.
     ///
     /// # Errors
+    /// - [`Error::InvalidTag`] if the virtual pointer has the wrong tag for this table.
+    ///
     /// If one of these errors occurs, the region may be partially mapped in the table:
     /// - [`Error::AlreadyMapped`] if part of the region has already been mapped with a different block size.
     /// - [`Error::Allocator`] if an error occurs trying to allocate new tables.
@@ -422,6 +443,10 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
         size: MapBlockSize,
         properties: &MemoryProperties,
     ) -> Result<(), Error> {
+        ensure!(
+            virtual_start.is_in_kernel_space() == self.high_tag,
+            InvalidTagSnafu
+        );
         self.for_each_entry_of_size(
             virtual_start,
             physical_start,
@@ -444,6 +469,8 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// Unmap a region of virtual addresses to a region of physical addresses in these page tables.
     ///
     /// # Errors
+    /// - [`Error::InvalidTag`] if the virtual pointer has the wrong tag for this table.
+    ///
     /// If one of these errors occurs, the region may be partially unmapped in the table:
     /// - [`Error::NotMapped`] if the region contains unmapped pages.
     pub fn unmap(
@@ -452,6 +479,10 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
         count: usize,
         size: MapBlockSize,
     ) -> Result<(), Error> {
+        ensure!(
+            virtual_start.is_in_kernel_space() == self.high_tag,
+            InvalidTagSnafu
+        );
         self.for_each_entry_of_size(
             virtual_start,
             0.into(),
@@ -471,6 +502,10 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// Returns `None` if there is no mapping for this address.
     #[must_use]
     pub fn physical_address_of(&self, p: VirtualAddress) -> Option<PhysicalAddress> {
+        if p.is_in_kernel_space() != self.high_tag {
+            return None;
+        }
+
         let mut level = 0;
         let mut table = self.root;
         while level <= 3 {
