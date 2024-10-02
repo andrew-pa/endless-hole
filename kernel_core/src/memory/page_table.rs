@@ -2,11 +2,11 @@
 
 use core::{
     num::{NonZero, NonZeroUsize},
-    ptr::{null_mut, NonNull},
+    ptr::NonNull,
 };
 
 use bitfield::BitRange;
-use snafu::Snafu;
+use snafu::{ResultExt as _, Snafu};
 
 use super::{PageAllocator, PhysicalAddress, VirtualAddress};
 
@@ -71,10 +71,10 @@ pub struct MemoryProperties {
 
 impl MemoryProperties {
     fn encode(&self) -> u64 {
-        (self.executable as u64) << 54
+        u64::from(self.executable) << 54
             | self.sharability.encode() << 8
-            | (self.writable as u64) << 7
-            | (self.user_space_access as u64) << 6
+            | u64::from(self.writable) << 7
+            | u64::from(self.user_space_access) << 6
             | self.kind.encode() << 2
     }
 }
@@ -93,8 +93,26 @@ pub enum MapBlockSize {
 }
 
 /// Errors that could arise in page table operations.
-#[derive(Debug, Eq, PartialEq, Snafu)]
-pub enum Error {}
+#[derive(Debug, Snafu)]
+pub enum Error {
+    /// Address was expected to be mapped, but was not.
+    #[snafu(display("Expected address {address:?} to be mapped"))]
+    NotMapped {
+        /// Address that was not mapped in the region.
+        address: VirtualAddress,
+    },
+    /// Address was mapped and cannot be remapped, for example because it was previously mapped with a larger block size.
+    #[snafu(display("Address {address:?} is already incompatibly mapped"))]
+    AlreadyMapped {
+        /// Address that was already mapped in the region.
+        address: VirtualAddress,
+    },
+    /// Error occurred in page allocator.
+    Allocator {
+        /// Cause of the error.
+        source: super::Error,
+    },
+}
 
 #[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
 #[repr(transparent)]
@@ -114,7 +132,7 @@ impl Entry {
     }
 
     /// Construct a page table entry pointing to a lower table.
-    fn for_table(table_address: PhysicalAddress, properties: &MemoryProperties) -> Self {
+    fn for_table(table_address: PhysicalAddress) -> Self {
         let address = usize::from(table_address);
         assert_eq!(address & 0xfff, 0);
         Self(0b11 | (address as u64))
@@ -134,7 +152,7 @@ impl Entry {
         Self(0b11 | (address as u64) | properties.encode() | (1 << 10/*access flag*/))
     }
 
-    fn decode(&self, occuring_at_level: u8) -> DecodedEntry {
+    fn decode(self, occuring_at_level: u8) -> DecodedEntry {
         let address = PhysicalAddress::from((self.0 & 0x0000_ffff_ffff_f000) as usize);
         match (occuring_at_level, self.0 & 0b11) {
             (_, 0b00) => DecodedEntry::Empty,
@@ -165,7 +183,7 @@ fn index_for_level(address: VirtualAddress, level: u8, page_size: PageSize) -> u
     };
     let addr = usize::from(address) as u64;
     let ix: u64 = addr.bit_range(msb, lsb);
-    ix as usize
+    usize::try_from(ix).unwrap()
 }
 
 #[derive(Eq, PartialEq, Clone, Copy, Debug)]
@@ -173,7 +191,7 @@ enum PageSize {
     FourKiB,
     SixteenKiB,
 }
-use PageSize::*;
+use PageSize::{FourKiB, SixteenKiB};
 
 impl From<usize> for PageSize {
     fn from(value: usize) -> Self {
@@ -194,6 +212,124 @@ impl From<PageSize> for usize {
     }
 }
 
+fn pages_per_entry(level: u8, page_size: PageSize) -> usize {
+    match page_size {
+        FourKiB => match level {
+            0 => 512 * 512 * 512,
+            1 => 512 * 512,
+            2 => 512,
+            3 => 1,
+            _ => panic!("invalid level {level}"),
+        },
+        // the level 0 table only has two entries
+        SixteenKiB => match level {
+            0 => 2 * 2048 * 2048,
+            1 => 2048 * 2048,
+            2 => 2048,
+            3 => 1,
+            _ => panic!("invalid level {level}"),
+        },
+    }
+}
+
+struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
+    parent: &'s PageTables<'pa, PA>,
+    end_level: u8,
+    block_size_in_bytes: usize,
+    block_size_in_pages: usize,
+    create_on_empty: bool,
+    f: &'a mut F,
+}
+
+impl<
+        'a,
+        's,
+        'pa,
+        PA: PageAllocator,
+        F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>,
+    > Walker<'a, 's, 'pa, PA, F>
+{
+    fn next_table_for_entry(
+        &self,
+        level: u8,
+        address: VirtualAddress,
+        entry: &mut Entry,
+    ) -> Result<*mut Entry, Error> {
+        match entry.decode(level) {
+            DecodedEntry::Empty => {
+                if self.create_on_empty {
+                    let next_table = self
+                        .parent
+                        .page_allocator
+                        .allocate_zeroed(1)
+                        .context(AllocatorSnafu)?
+                        .cast()
+                        .as_ptr();
+                    *entry = Entry::for_table(PhysicalAddress::from(next_table));
+                    Ok(next_table.cast())
+                } else {
+                    Err(Error::NotMapped { address })
+                }
+            }
+            DecodedEntry::Table(table_pointer) => Ok(table_pointer.cast().into()),
+            DecodedEntry::Block(_) | DecodedEntry::Page(_) => Err(Error::AlreadyMapped { address }),
+        }
+    }
+
+    fn step(
+        &mut self,
+        level: u8,
+        table_root: *mut Entry,
+        virtual_start: VirtualAddress,
+        physical_start: PhysicalAddress,
+        count: usize,
+    ) -> Result<(), Error> {
+        assert!(count > 0);
+        let start_index = index_for_level(virtual_start, level, self.parent.page_size);
+        if level < self.end_level {
+            let number_of_blocks_per_entry_at_this_level =
+                pages_per_entry(level, self.parent.page_size) / self.block_size_in_pages;
+            let mut index = start_index;
+            let mut num_blocks = 0;
+            while num_blocks < count {
+                assert!(index < self.parent.entries_per_page);
+                let entry = unsafe { table_root.add(index).as_mut().expect("table is non-null") };
+                let byte_offset = num_blocks * self.block_size_in_bytes;
+                let next_vs = virtual_start.byte_add(byte_offset);
+                let next_table: *mut Entry = self.next_table_for_entry(level, next_vs, entry)?;
+                let start_at_next_level =
+                    index_for_level(next_vs, level + 1, self.parent.page_size);
+                let actual_blocks_in_next_level = (count - num_blocks)
+                    .min(number_of_blocks_per_entry_at_this_level - start_at_next_level);
+                #[cfg(test)]
+                std::println!("L{level}.{index}/{num_blocks}; count={count}, #b/e={number_of_blocks_per_entry_at_this_level}, next_vs={next_vs:?}, next_table={next_table:?}, next_start={start_at_next_level} #b={actual_blocks_in_next_level}, (entry = {entry:x?}), {:?}", self.parent.page_size);
+                self.step(
+                    level + 1,
+                    next_table,
+                    next_vs,
+                    physical_start.byte_add(byte_offset),
+                    actual_blocks_in_next_level,
+                )?;
+                index += 1;
+                num_blocks += actual_blocks_in_next_level;
+            }
+            Ok(())
+        } else {
+            let entry_count = self.parent.entries_per_page;
+            let end_index = start_index + count;
+            #[cfg(test)]
+            std::println!("L{level}.{start_index}..{end_index}; count={count}, vs={virtual_start:?}, ps={physical_start:?}");
+            assert!(end_index <= entry_count, "start_index({start_index}) + count({count}) = end_index({end_index}) > entries_per_table({entry_count})");
+            for i in 0..count {
+                let addr = physical_start.byte_add(i * self.block_size_in_bytes);
+                let entry_ptr = unsafe { table_root.add(start_index + i) };
+                (self.f)(entry_ptr, addr)?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// A page table data structure in memory.
 ///
 /// This structure manages the entire tree of tables.
@@ -206,13 +342,16 @@ pub struct PageTables<'pa, PA: PageAllocator> {
 
 impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// Create a new page tables structure that has no mappings.
-    pub fn empty(page_allocator: &'pa PA) -> Self {
-        Self {
+    ///
+    /// # Errors
+    /// - Returns an error if the page allocator fails to allocate the root table.
+    pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
+        Ok(Self {
             page_allocator,
             page_size: page_allocator.page_size().into(),
             entries_per_page: page_allocator.page_size() / size_of::<Entry>(),
-            root: page_allocator.allocate_zeroed(1).unwrap().cast().as_ptr(),
-        }
+            root: page_allocator.allocate_zeroed(1)?.cast().as_ptr(),
+        })
     }
 
     /// Convert existing page tables in memory into a [`PageTables`] instance.
@@ -254,7 +393,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             MapBlockSize::LargeBlock if self.page_size == FourKiB => {
                 NonZero::new(self.entries_per_page * self.entries_per_page)
             }
-            _ => None,
+            MapBlockSize::LargeBlock => None,
         }
     }
 
@@ -263,7 +402,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     #[must_use]
     pub fn block_length_in_bytes(&self, size: MapBlockSize) -> Option<NonZeroUsize> {
         self.block_length_in_pages(size)
-            .map(|s| NonZero::new(s.get() * self.page_allocator.page_size()).unwrap())
+            .map(|s| unsafe { NonZero::new_unchecked(s.get() * self.page_allocator.page_size()) })
     }
 
     fn for_each_entry_of_size<F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>>(
@@ -275,108 +414,6 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
         create_on_empty: bool,
         mut f: F,
     ) -> Result<(), Error> {
-        struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
-            parent: &'s PageTables<'pa, PA>,
-            end_level: u8,
-            block_size_in_bytes: usize,
-            block_size_in_pages: usize,
-            create_on_empty: bool,
-            f: &'a mut F,
-        }
-
-        impl<
-                'a,
-                's,
-                'pa,
-                PA: PageAllocator,
-                F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>,
-            > Walker<'a, 's, 'pa, PA, F>
-        {
-            fn step(
-                &mut self,
-                level: u8,
-                table_root: *mut Entry,
-                virtual_start: VirtualAddress,
-                physical_start: PhysicalAddress,
-                count: usize,
-            ) -> Result<(), Error> {
-                assert!(count > 0);
-                let start_index = index_for_level(virtual_start, level, self.parent.page_size);
-                if level < self.end_level {
-                    let number_of_pages_per_entry_at_this_level = match self.parent.page_size {
-                        FourKiB => match level {
-                            0 => 512 * 512 * 512,
-                            1 => 512 * 512,
-                            2 => 512,
-                            3 => 1,
-                            _ => panic!("invalid level {level}"),
-                        },
-                        // the level 0 table only has two entries
-                        SixteenKiB => match level {
-                            0 => 2 * 2048 * 2048,
-                            1 => 2048 * 2048,
-                            2 => 2048,
-                            3 => 1,
-                            _ => panic!("invalid level {level}"),
-                        },
-                    } / self.block_size_in_pages;
-                    let mut index = start_index;
-                    let mut num_blocks = 0;
-                    while num_blocks < count {
-                        assert!(index < self.parent.entries_per_page);
-                        let entry =
-                            unsafe { table_root.add(index).as_mut().expect("table is non-null") };
-                        let byte_offset = num_blocks * self.block_size_in_bytes;
-                        let next_vs = virtual_start.byte_add(byte_offset);
-                        let next_ps = physical_start.byte_add(byte_offset);
-                        let next_table: *mut Entry = match entry.decode(level) {
-                            DecodedEntry::Empty => {
-                                if self.create_on_empty {
-                                    let next_table = self.parent.page_allocator.allocate_zeroed(1).unwrap().cast().as_ptr();
-                                    *entry = Entry::for_table(PhysicalAddress::from(next_table), &MemoryProperties::default());
-                                    next_table.cast()
-                                } else {
-                                    return Err(todo!("unexpected empty entry"))
-                                }
-                            },
-                            DecodedEntry::Table(table_pointer) => {
-                                table_pointer.cast().into()
-                            },
-                            DecodedEntry::Block(_) | DecodedEntry::Page(_) => panic!("cannot remap region previously mapped with blocks without first unmapping"),
-                        };
-                        let start_at_next_level =
-                            index_for_level(next_vs, level + 1, self.parent.page_size);
-                        let actual_blocks_in_next_level = (count - num_blocks)
-                            .min(number_of_pages_per_entry_at_this_level - start_at_next_level);
-                        #[cfg(test)]
-                        std::println!("L{level}.{index}/{num_blocks}; count={count}, #b/e={number_of_pages_per_entry_at_this_level}, next_vs={next_vs:?}, next_ps={next_ps:?}, next_table={next_table:?}, next_start={start_at_next_level} #b={actual_blocks_in_next_level}, (entry = {entry:x?}), {:?}", self.parent.page_size);
-                        self.step(
-                            level + 1,
-                            next_table,
-                            next_vs,
-                            next_ps,
-                            actual_blocks_in_next_level,
-                        )?;
-                        index += 1;
-                        num_blocks += actual_blocks_in_next_level;
-                    }
-                    Ok(())
-                } else {
-                    let entry_count = self.parent.entries_per_page;
-                    let end_index = start_index + count;
-                    #[cfg(test)]
-                    std::println!("L{level}.{start_index}..{end_index}; count={count}, vs={virtual_start:?}, ps={physical_start:?}");
-                    assert!(end_index <= entry_count, "start_index({start_index}) + count({count}) = end_index({end_index}) > entries_per_table({entry_count})");
-                    for i in 0..count {
-                        let addr = physical_start.byte_add(i * self.block_size_in_bytes);
-                        let entry_ptr = unsafe { table_root.add(start_index + i) };
-                        (self.f)(entry_ptr, addr)?;
-                    }
-                    Ok(())
-                }
-            }
-        }
-
         let end_level = match size {
             MapBlockSize::Page => 3,
             MapBlockSize::SmallBlock => 2,
@@ -389,7 +426,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             }
         };
 
-        // TODO: we need to check for errors here before doing the actual mapping
+        // TODO: we need to check for errors (bounds) here before doing the actual mapping
         Walker {
             parent: self,
             end_level,
@@ -406,6 +443,11 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     ///
     /// Both start pointers must be aligned to the `size` required alignment.
     /// The region will be of `count * block_length_in_pages(size) * page_size` bytes.
+    ///
+    /// # Errors
+    /// If one of these errors occurs, the region may be partially mapped in the table:
+    /// - [`Error::AlreadyMapped`] if part of the region has already been mapped with a different block size.
+    /// - [`Error::Allocator`] if an error occurs trying to allocate new tables.
     pub fn map(
         &mut self,
         virtual_start: VirtualAddress,
@@ -434,6 +476,10 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     }
 
     /// Unmap a region of virtual addresses to a region of physical addresses in these page tables.
+    ///
+    /// # Errors
+    /// If one of these errors occurs, the region may be partially unmapped in the table:
+    /// - [`Error::NotMapped`] if the region contains unmapped pages.
     pub fn unmap(
         &mut self,
         virtual_start: VirtualAddress,
@@ -478,7 +524,9 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                             (FourKiB, 1) => 0x3fff_ffff,
                             (SixteenKiB, 3) => 0x3fff,
                             (SixteenKiB, 2) => 0x1ff_ffff,
-                            (ps, level) => panic!("invalid level {level} at page size {ps:?}"),
+                            (ps, level) => {
+                                unreachable!("invalid level {level} at page size {ps:?}")
+                            }
                         };
                         let offset = usize::from(p) & offset_mask;
                         #[cfg(test)]
@@ -606,7 +654,7 @@ mod tests {
     ) {
         let pa = MockPageAllocator::new(page_size, 128);
         {
-            let mut pt = PageTables::empty(&pa);
+            let mut pt = PageTables::empty(&pa).unwrap();
             let start_address = VirtualAddress::from(start_address);
             pt.map(
                 start_address,
@@ -629,7 +677,7 @@ mod tests {
     fn offset_physical_address_of(page_size: usize) {
         let pa = MockPageAllocator::new(page_size, 8);
         {
-            let mut pt = PageTables::empty(&pa);
+            let mut pt = PageTables::empty(&pa).unwrap();
             pt.map(
                 0xff_0000.into(),
                 0xaaaa_0000.into(),
@@ -651,7 +699,7 @@ mod tests {
     fn overlapping_map(page_size: usize, block_size: MapBlockSize) {
         let pa = MockPageAllocator::new(page_size, 128);
         {
-            let mut pt = PageTables::empty(&pa);
+            let mut pt = PageTables::empty(&pa).unwrap();
             let block_len = pt.block_length_in_bytes(block_size).unwrap().get();
             pt.map(
                 0xeeee_0000_0000.into(),
@@ -697,7 +745,7 @@ mod tests {
     fn partial_unmap_whole(page_size: usize, block_size: MapBlockSize) {
         let pa = MockPageAllocator::new(page_size, 128);
         {
-            let mut pt = PageTables::empty(&pa);
+            let mut pt = PageTables::empty(&pa).unwrap();
             let block_len = pt.block_length_in_bytes(block_size).unwrap().get();
             pt.map(
                 0xeeee_0000_0000.into(),
