@@ -14,9 +14,10 @@ Finally, the kernel also takes care of handling interrupts from devices and noti
 A process is a collection of threads who share the same:
 
 - process ID
-- memory address space and memory loans
 - supervisor process ID
 - role (process level and supervisor status)
+- memory address space
+- shared buffers
 - exit state: running, successfully exited with some code, exited with a fault
 
 Processes start with a single main thread running at their entry point.
@@ -56,14 +57,15 @@ A single thread in each process is designated as the receiver thread for the pro
 Each process has its own virtual address space managed by the kernel.
 When a process is created, the address space contains the loaded executable binary, the stack, and any initial parameters.
 All processes can request new pages of RAM from the kernel to be mapped into their address space for heap purposes.
+Driver processes can also request for the kernel to map an arbitrary region of physical addresses into their address space.
 
-The Rust borrowing idea is extended to interprocess shared memory - a memory "loan".
-Loans can either be shared and read-only (like a `&T`) or exclusive and read-write (like a `&mut T`).
-A loan consists of the base address in the loaning process and the number of pages to be loaned.
-The loan's extent must be an whole number of pages.
-Driver processes can also request a loan from the kernel for an arbitrary region of physical addresses.
-
-In addition to loans, processes can move memory from their own process to another process.
+Memory can be shared between processes using shared buffers.
+Shared buffers are created by sending a message to another process that contains a buffer descriptor that indicates the memory to be shared and if the receiver can read or write it.
+The receiver gets a handle that it can pass back to the kernel to request memory copies between the buffer memory and its own memory.
+Receivers can only perform operations that were allowed by the sender of the buffer.
+Receivers can also send a shared buffer to another process by including it in a message.
+Handles, however, are scoped to a single process, so this creates a new handle.
+TODO: can you share the same region of memory with two different processes?
 
 The kernel's own virtual memory is identity mapped to cover the whole range of physical memory.
 
@@ -73,18 +75,18 @@ Messages consist of 64-byte blocks, and can be a maximum of 16 blocks long (1024
 Messages must be 8-byte aligned.
 Messages contain:
 
-- The process and thread ID of the sender. The thread ID is optional.
+- The process and thread ID of the recipient. The thread ID is optional.
 - The number of memory operations contained in the message.
 - Flags indicating if it should be deleted from the thread's receive queue yet
 - The number of blocks total used by the message
-- Optionally, a memory loan or move that can be accepted by the receiver
+- Shared buffer descriptors to be sent to the recipient
 - Message payload data to be interpreted by the receiver
 
 Messages can be sent to a process' designated receiver thread without knowing the thread ID by leaving the thread ID unspecified.
 
 The kernel must store messages that are in transit, having been sent but not yet received.
-To do this, the kernel loans, for each thread, a region of memory to hold received messages for that thread.
-The process does not actually need to know about this loan, because it receives the necessary slices from the `receive` system call.
+To do this, the kernel provides, for each thread, a region of memory to hold received messages for that thread.
+The process does not actually need to know about this memory region, because it receives the necessary slices from the `receive` system call.
 Threads must mark the messages as read/deletable after they are done with them so the kernel can reuse the space.
 
 ## Boot Process
@@ -101,7 +103,7 @@ The kernel boot process looks something like:
     - Timers
     - Thread scheduler
 - Locate and parse the initramfs blob
-- Load the `init` process from the initramfs and spawn it. The `init` process is loaned the device tree blob and initramfs blob, and starts with 'driver' permissions.
+- Load the `init` process from the initramfs and spawn it. The device tree blob and initramfs blob are moved into the `init` process's address space, and it starts with 'driver' permissions.
 - Start the thread scheduler
 
 
@@ -168,7 +170,7 @@ A `MessageBlock` is basically a `[u8; 64]`. The first block in the message must 
 
 ### `receive`
 The `receive` system call allows a process to receive a message from another process.
-By default, loans are automatically applied if attached, and their details relative to the receiver will be present in the received message header.
+By default, shared buffers are automatically given handles if attached, and their details relative to the receiver will be present in the received message header.
 The pointer returned by `receive` is valid until the message is marked for deletion.
 
 This call will by default set the thread to a waiting state if there are no messages.
@@ -188,12 +190,62 @@ The `receive` call accepts the following flags:
 | Name           | Description                              |
 |----------------|------------------------------------------|
 | `Nonblocking`  | Causes the kernel to return the `WouldBlock` error if there are no messages instead of pausing the thread. |
-| `DenyMemoryTransfer` | Causes the kernel to ignore any memory operations contained in the received message. |
+| `IgnoreShared` | Causes the kernel to ignore any shared buffers contained in the received message. |
 
 #### Errors
 - `WouldBlock`: returned in non-blocking mode if there are no messages to receive.
 - `InvalidFlags`: an unknown or invalid flag combination was passed.
 - `InvalidPointer`: the message pointer or length pointer was null or invalid.
+
+### `transfer_to_shared_buffer`
+Copy bytes from the caller process into a shared buffer that has been sent to it.
+Only valid if the sender has allowed writes to the buffer.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `buffer_handle` | buffer handle   | Handle to the shared buffer to copy into. |
+| `dst_offset` | u64                | Offset into the shared buffer to start writing bytes to. |
+| `src_address` | `*const u8`       | Source address to copy from in the calling process. |
+| `length` | u64                    | Length of the copy in bytes. |
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+
+#### Flags
+The `transfer_to_shared_buffer` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+
+#### Errors
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `NotFound`: an unknown buffer handle was passed.
+- `InvalidPointer`: the message pointer or length pointer was null or invalid.
+- `InvalidLength`: the requested operation would extend past the end of the buffer.
+
+### `transfer_from_shared_buffer`
+Copy bytes from a shared buffer to the caller process.
+Only valid if the sender has allowed reads from the buffer.
+
+#### Arguments
+| Name       | Type                 | Notes                            |
+|------------|----------------------|----------------------------------|
+| `buffer_handle` | buffer handle   | Handle to the shared buffer to copy from. |
+| `src_offset` | u64                | Offset into the shared buffer to start reading bytes from. |
+| `dst_address` | `*const u8`       | Destination address to copy to in the calling process. |
+| `length` | u64                    | Length of the copy in bytes. |
+| `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
+
+#### Flags
+The `transfer_from_shared_buffer` call accepts the following flags:
+
+| Name           | Description                              |
+|----------------|------------------------------------------|
+
+#### Errors
+- `InvalidFlags`: an unknown or invalid flag combination was passed.
+- `NotFound`: an unknown buffer handle was passed.
+- `InvalidPointer`: the message pointer or length pointer was null or invalid.
+- `InvalidLength`: the requested operation would extend past the end of the buffer.
 
 ### `read_env_value`
 Reads a value from the kernel about the current process environment.
@@ -357,8 +409,8 @@ The `free_heap_pages` call accepts the following flags:
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
-Creates a memory loan from the kernel for a region of physical address space.
-This region must be **outside** of the addresses mapped to RAM to preserve the integrity of loans.
+Creates a map in the caller's page tables for a region of physical address space.
+This region must be **outside** of the addresses mapped to RAM to preserve the integrity of user space.
 The driver is responsible for ensuring that access to these memory regions is safe.
 Only one driver can request any address at a time.
 
@@ -388,13 +440,13 @@ The `driver_request_address_region` call accepts the following flags:
 *This system call is allowed only for processes with the `driver` role.
 Any other processes which call this function will exit with a fault.*
 
-Releases an address range previously loaned to the current process.
+Releases an address range previously mapped into the current process.
 The virtual base address pointer for the region is invalid to access after calling this function.
 
 #### Arguments
 | Name       | Type                 | Notes                            |
 |------------|----------------------|----------------------------------|
-| `ptr` | `*mut ()` | Pointer to the base address of the loaned region. |
+| `ptr` | `*mut ()` | Pointer to the base address of the region. |
 | `flags`    | bitflag              | Options flags for this system call (see the `Flags` section). |
 
 #### Flags
@@ -414,7 +466,7 @@ Any other processes which call this function will exit with a fault.*
 Registers a handler program with the kernel to handle when the specified hardware interrupt occurs.
 More than one driver may register for the same interrupt, and all of them will be executed.
 
-Interrupt handler programs are encoded in the Interrupt Handler Virtual Machine (IHVM) bytecode format, described in (`ihvm.md`)[./ihvm.md].
+Interrupt handler programs are encoded in the Interrupt Handler Virtual Machine (IHVM) bytecode format, described in [`ihvm.md`](./ihvm.md).
 If the handler panics, then a message will be sent to the driver containing the handler ID and panic error code.
 
 #### Arguments
@@ -494,5 +546,5 @@ A single `LD1` instruction can load up to 64 bytes (using four actual loads), wh
 
 ## Device Driver Servers
 A typical device driver server would be spawned as a 'driver' type process by the `init` process.
-The driver would first request loans from the kernel or its lower-level driver, set up interrupts with the kernel, and then initialize the device.
-The driver then listens for requests from clients, and handles them using the device. Ideally most actual data transfers happen using loans.
+The driver would first request maps from the kernel or its lower-level driver, set up interrupts with the kernel, and then initialize the device.
+The driver then listens for requests from clients, and handles them using the device. Ideally most actual data transfers happen using shared buffers.
