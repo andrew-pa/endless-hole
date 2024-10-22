@@ -1,7 +1,5 @@
 //! Page tables data structure.
 
-use core::num::{NonZero, NonZeroUsize};
-
 use bitfield::BitRange;
 use snafu::{ensure, ResultExt as _, Snafu};
 
@@ -69,16 +67,17 @@ pub struct MemoryProperties {
 
 impl MemoryProperties {
     fn encode(&self) -> u64 {
-        u64::from(self.executable) << 54
-            | self.sharability.encode() << 8
-            | u64::from(self.writable) << 7
-            | u64::from(self.user_space_access) << 6
-            | self.kind.encode() << 2
+        (u64::from(!self.executable) << 54)
+            | (u64::from(!self.executable) << 53)
+            | (self.sharability.encode() << 8)
+            | (u64::from(self.writable) << 7)
+            | (u64::from(self.user_space_access) << 6)
+            | (self.kind.encode() << 2)
     }
 }
 
 /// The size of the granule used in a mapping operation.
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum MapBlockSize {
     /// Maps by single pages.
     Page,
@@ -88,6 +87,32 @@ pub enum MapBlockSize {
     /// Maps by big blocks in the Level 1 table.
     /// (1GiB with 4KiB pages, not available with 16KiB or 64KiB pages)
     LargeBlock,
+}
+
+impl MapBlockSize {
+    /// Returns the largest block size supported by the hardware for a given page size.
+    #[must_use]
+    pub fn largest_supported_block_size(page_size: PageSize) -> Self {
+        match page_size {
+            FourKiB => MapBlockSize::LargeBlock,
+            SixteenKiB => MapBlockSize::SmallBlock,
+        }
+    }
+
+    /// Returns the length in pages of this block size.
+    /// Returns None if the block size is not supported in the current page size.
+    #[must_use]
+    pub fn length_in_pages(&self, page_size: PageSize) -> Option<usize> {
+        let entries_per_page = usize::from(page_size) / size_of::<Entry>();
+        match self {
+            MapBlockSize::Page => Some(1),
+            MapBlockSize::SmallBlock => Some(entries_per_page),
+            MapBlockSize::LargeBlock if page_size == FourKiB => {
+                Some(entries_per_page * entries_per_page)
+            }
+            MapBlockSize::LargeBlock => None,
+        }
+    }
 }
 
 /// Errors that could arise in page table operations.
@@ -113,7 +138,15 @@ pub enum Error {
     /// A mapping was requested that is too small or too large for the system.
     InvalidCount,
     /// Virtual address has the wrong tag value for the table.
-    InvalidTag,
+    InvalidTag {
+        /// Address that was invalid.
+        value: VirtualAddress,
+    },
+    /// Address is improperally aligned for the requested block size.
+    InvalidAlignment {
+        /// Address that was unaligned (physical or virtual).
+        value: usize,
+    },
 }
 
 #[derive(Eq, PartialEq, Debug, Default, Clone, Copy)]
@@ -168,6 +201,7 @@ impl Entry {
     }
 }
 
+/// Returns the index into the page table at `level` for `address` given the current `page_size`.
 #[inline]
 fn index_for_level(address: VirtualAddress, level: u8, page_size: PageSize) -> usize {
     let (msb, lsb) = match (level, page_size) {
@@ -188,6 +222,7 @@ fn index_for_level(address: VirtualAddress, level: u8, page_size: PageSize) -> u
     usize::try_from(ix).unwrap()
 }
 
+/// Returns the number of pages represented by a single page table entry at `level` given `page_size`.
 fn pages_per_entry(level: u8, page_size: PageSize) -> usize {
     match page_size {
         FourKiB => match level {
@@ -208,11 +243,15 @@ fn pages_per_entry(level: u8, page_size: PageSize) -> usize {
     }
 }
 
+/// Page table traversal closure (recursive).
 struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
     parent: &'s PageTables<'pa, PA>,
+    /// Level where entries will be passed to `f`.
     end_level: u8,
     block_size_in_bytes: usize,
     block_size_in_pages: usize,
+    /// If true, the walker will create new tables for empty entries in the range. Otherwise an
+    /// error will be returned when they are encountered.
     create_on_empty: bool,
     f: &'a mut F,
 }
@@ -250,6 +289,19 @@ impl<
         }
     }
 
+    /// Recursively steps through the page tables to apply the callback function `f` to the entries in the range.
+    ///
+    /// # Arguments
+    ///
+    /// * `level` - The current level in the page table hierarchy.
+    /// * `table_root` - Pointer to the current page table.
+    /// * `virtual_start` - Starting virtual address for this step.
+    /// * `physical_start` - Starting physical address for this step.
+    /// * `count` - Number of blocks (of size `self.block_size*`) to process.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), Error>` - Ok if successful, or an error if mapping fails.
     fn step(
         &mut self,
         level: u8,
@@ -263,6 +315,7 @@ impl<
         if level < self.end_level {
             let number_of_blocks_per_entry_at_this_level =
                 pages_per_entry(level, self.parent.page_size) / self.block_size_in_pages;
+            // iterate over entries, distributing the `count` blocks across entries
             let mut index = start_index;
             let mut num_blocks = 0;
             while num_blocks < count {
@@ -312,9 +365,12 @@ pub struct PageTables<'pa, PA: PageAllocator> {
     entries_per_page: usize,
     root: *mut Entry,
     page_size: PageSize,
-    /// true => pointers must have 0xffff tag, false => must have 0x0000 tag.
+    /// true => pointers must have `0xffff` tag, false => must have `0x0000` tag.
     high_tag: bool,
 }
+
+// SAFETY: this is safe because each `PageTables` owns the memory it points to exclusively.
+unsafe impl<'pa, PA: PageAllocator> Send for PageTables<'pa, PA> {}
 
 impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// Create a new page tables structure that has no mappings.
@@ -332,6 +388,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// # Safety
     /// - The `root_table_address` must point to a valid root page table in memory.
     /// - Any pages already in the tables must have come from `page_allocator`.
+    /// - The pages already in the tables must not be shared with any other instance of `PageTables`.
     ///
     /// # Panics
     /// - If the root table address is null or not aligned to the size of a page.
@@ -358,26 +415,10 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
         PhysicalAddress::from(self.root.cast())
     }
 
-    /// Returns the length in pages of this block size.
-    /// Returns None if the block size is not supported in the current page size.
+    /// Returns true if this kernel is for "high tag" pointers, i.e. pointers where the top 16 bits are `0xffff`.
     #[must_use]
-    pub fn block_length_in_pages(&self, size: MapBlockSize) -> Option<NonZeroUsize> {
-        match size {
-            MapBlockSize::Page => NonZero::new(1),
-            MapBlockSize::SmallBlock => NonZero::new(self.entries_per_page),
-            MapBlockSize::LargeBlock if self.page_size == FourKiB => {
-                NonZero::new(self.entries_per_page * self.entries_per_page)
-            }
-            MapBlockSize::LargeBlock => None,
-        }
-    }
-
-    /// Returns the length in bytes of this block size (i.e. `block_length_in_pages() * page_size`).
-    /// Returns None if the block size is not supported in the current page size.
-    #[must_use]
-    pub fn block_length_in_bytes(&self, size: MapBlockSize) -> Option<NonZeroUsize> {
-        self.block_length_in_pages(size)
-            .map(|s| s.saturating_mul(NonZeroUsize::from(self.page_allocator.page_size())))
+    pub fn high_tag(&self) -> bool {
+        self.high_tag
     }
 
     fn for_each_entry_of_size<F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>>(
@@ -401,7 +442,8 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
             }
         };
 
-        let block_size_in_pages = self.block_length_in_pages(size).unwrap().get();
+        let block_size_in_pages = size.length_in_pages(self.page_size).unwrap();
+        let block_size_in_bytes = self.page_size * block_size_in_pages;
         // ensure that the size of the mapping is within range
         // TODO: make this bound tighter
         ensure!(
@@ -411,11 +453,23 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                     .is_some_and(|x| x < (1 << 48)),
             InvalidCountSnafu
         );
+        ensure!(
+            virtual_start.is_aligned_to(block_size_in_bytes),
+            InvalidAlignmentSnafu {
+                value: virtual_start
+            }
+        );
+        ensure!(
+            physical_start.is_aligned_to(block_size_in_bytes),
+            InvalidAlignmentSnafu {
+                value: physical_start
+            }
+        );
 
         Walker {
             parent: self,
             end_level,
-            block_size_in_bytes: self.page_size * block_size_in_pages,
+            block_size_in_bytes,
             block_size_in_pages,
             create_on_empty,
             f: &mut f,
@@ -445,7 +499,9 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     ) -> Result<(), Error> {
         ensure!(
             virtual_start.is_in_kernel_space() == self.high_tag,
-            InvalidTagSnafu
+            InvalidTagSnafu {
+                value: virtual_start
+            }
         );
         self.for_each_entry_of_size(
             virtual_start,
@@ -481,7 +537,9 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     ) -> Result<(), Error> {
         ensure!(
             virtual_start.is_in_kernel_space() == self.high_tag,
-            InvalidTagSnafu
+            InvalidTagSnafu {
+                value: virtual_start
+            }
         );
         self.for_each_entry_of_size(
             virtual_start,
@@ -582,7 +640,7 @@ mod tests {
         mapped_or_unmapped: bool,
     ) {
         let page_size = pt.page_allocator.page_size();
-        let page_count = count * pt.block_length_in_pages(block_size).unwrap().get();
+        let page_count = count * block_size.length_in_pages(page_size).unwrap();
         let pages_to_check: Box<dyn Iterator<Item = usize>> = if page_count > 2048 {
             // there are too many pages to check them all
             // we know the math is safe because page_count > 2
@@ -703,7 +761,7 @@ mod tests {
         let pa = MockPageAllocator::new(page_size, 128);
         {
             let mut pt = PageTables::empty(&pa).unwrap();
-            let block_len = pt.block_length_in_bytes(block_size).unwrap().get();
+            let block_len = block_size.length_in_pages(page_size).unwrap() * pa.page_size();
             pt.map(
                 0xeeee_0000_0000.into(),
                 0xaaaa_0000_0000.into(),
@@ -749,7 +807,7 @@ mod tests {
         let pa = MockPageAllocator::new(page_size, 128);
         {
             let mut pt = PageTables::empty(&pa).unwrap();
-            let block_len = pt.block_length_in_bytes(block_size).unwrap().get();
+            let block_len = block_size.length_in_pages(page_size).unwrap() * pa.page_size();
             pt.map(
                 0xeeee_0000_0000.into(),
                 0xaaaa_0000_0000.into(),

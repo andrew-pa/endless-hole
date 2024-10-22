@@ -47,29 +47,45 @@ impl<T> PhysicalPointer<T> {
     #[inline]
     #[must_use]
     #[allow(clippy::should_implement_trait)]
-    pub fn add(self, count: usize) -> Self {
+    pub const fn add(self, count: usize) -> Self {
         self.byte_add(count * size_of::<T>())
     }
 
     /// Offset this pointer forward by `count` bytes.
     #[inline]
     #[must_use]
-    pub fn byte_add(self, count: usize) -> Self {
+    pub const fn byte_add(self, count: usize) -> Self {
         Self(self.0 + count, PhantomData)
     }
 
     /// Cast this pointer from type `T` to type `U`.
     #[inline]
     #[must_use]
-    pub fn cast<U>(self) -> PhysicalPointer<U> {
+    pub const fn cast<U>(self) -> PhysicalPointer<U> {
         PhysicalPointer(self.0, PhantomData)
     }
 
     /// Check to see if this pointer is null.
     #[inline]
     #[must_use]
-    pub fn is_null(self) -> bool {
+    pub const fn is_null(self) -> bool {
         self.0 == 0
+    }
+
+    /// Returns whether the pointer is aligned to `alignment`.
+    #[inline]
+    #[must_use]
+    pub const fn is_aligned_to(self, alignment: usize) -> bool {
+        self.0 % alignment == 0
+    }
+}
+
+impl PhysicalAddress {
+    /// Convert a pointer of any type into a virtual address with no type.
+    #[inline]
+    #[must_use]
+    pub fn from_ptr<T>(ptr: *mut T) -> Self {
+        Self(ptr as usize, PhantomData)
     }
 }
 
@@ -172,6 +188,13 @@ macro_rules! virtual_pointer_impl {
             #[must_use]
             pub fn cast<U>(self) -> $vpt<U> {
                 $vpt(self.0, PhantomData)
+            }
+
+            /// Returns whether the pointer is aligned to `alignment`.
+            #[inline]
+            #[must_use]
+            pub const fn is_aligned_to(self, alignment: usize) -> bool {
+                self.0 % alignment == 0
             }
         }
 
@@ -349,6 +372,12 @@ pub trait PageAllocator {
     /// # Errors
     /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
     fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error>;
+}
+
+/// Abstract operations provided by the Memory Managment Unit (MMU).
+pub trait MemoryManagmentUnit {
+    /// Make a page table data structure current in the MMU so it is used for lookups.
+    unsafe fn activate_page_tables<'pa, PA: PageAllocator>(&self, tables: &PageTables<'pa, PA>);
 }
 
 #[cfg(test)]
