@@ -377,7 +377,12 @@ pub trait PageAllocator {
 /// Abstract operations provided by the Memory Managment Unit (MMU).
 pub trait MemoryManagmentUnit {
     /// Make a page table data structure current in the MMU so it is used for lookups.
-    unsafe fn activate_page_tables<'pa, PA: PageAllocator>(&self, tables: &PageTables<'pa, PA>);
+    ///
+    /// # Safety
+    ///
+    /// The page tables provided must be valid or else this function has undefined behavior.
+    /// Valid page tables for the kernel must map the caller's return address correctly or else this has undefined behavior. Likewise with the stack, etc.
+    unsafe fn activate_page_tables<PA: PageAllocator>(&self, tables: &PageTables<'_, PA>);
 }
 
 #[cfg(test)]

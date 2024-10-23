@@ -24,7 +24,7 @@ pub struct StringList<'dt> {
     pub data: &'dt [u8],
 }
 
-impl<'dt> StringList<'dt> {
+impl StringList<'_> {
     /// Determine if the byte sequence `s` is in the list of strings.
     #[must_use]
     pub fn contains(&self, s: &[u8]) -> bool {
@@ -49,7 +49,7 @@ impl<'a: 'dt, 'dt> IntoIterator for &'a StringList<'dt> {
     }
 }
 
-impl<'dt> core::fmt::Debug for StringList<'dt> {
+impl core::fmt::Debug for StringList<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }
@@ -66,7 +66,7 @@ pub struct Registers<'dt> {
     pub size_cells: u32,
 }
 
-impl<'dt> Registers<'dt> {
+impl Registers<'_> {
     /// Iterate over the (address, length) pairs contained in this array.
     ///
     /// These are yielded as `usize`.
@@ -87,7 +87,7 @@ impl<'a: 'dt, 'dt> IntoIterator for &'a Registers<'dt> {
     }
 }
 
-impl<'dt> core::fmt::Debug for Registers<'dt> {
+impl core::fmt::Debug for Registers<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_list().entries(self.iter()).finish()
     }

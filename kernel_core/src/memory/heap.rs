@@ -163,7 +163,7 @@ fn header_padding_max(layout: Layout) -> usize {
 /// Large allocations may request more pages than this.
 const MIN_PAGE_ALLOCATION: usize = 4;
 
-unsafe impl<'pa, PA: PageAllocator> GlobalAlloc for HeapAllocator<'pa, PA> {
+unsafe impl<PA: PageAllocator> GlobalAlloc for HeapAllocator<'_, PA> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let alloc_header_layout = Layout::new::<AllocatedHeader>();
         let between_header_and_data_padding_max = header_padding_max(layout);

@@ -11,7 +11,6 @@ use kernel_core::{
     memory::{
         page_table::{MapBlockSize, MemoryProperties},
         BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables, PhysicalAddress,
-        PhysicalPointer, VirtualPointer, VirtualPointerMut,
     },
     platform::device_tree::DeviceTree,
 };
@@ -46,10 +45,10 @@ pub unsafe fn flush_tlb_total_el1() {
         // suggests using VMALLE1 instead, which appears to work
         "DSB ISH", // ensure that flush has completed
         "ISB",     // make sure next instruction is fetched with changes
-    )
+    );
 }
 
-/// Write the MAIR_EL1 register.
+/// Write the `MAIR_EL1` register.
 pub unsafe fn write_mair(value: u64) {
     core::arch::asm!(
         "msr MAIR_EL1, {val}",
@@ -132,6 +131,8 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
         )
         .expect("identity map RAM into kernel");
 
+        writeln!(uart, "new kernel page table {pt:?}").unwrap();
+
         Mutex::new(pt)
     });
 
@@ -147,8 +148,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     for (region_start, region_length) in memory_regions {
         writeln!(
             uart,
-            "adding additional memory region to physical page allocator ({:x?}, {:x})",
-            region_start, region_length
+            "adding additional memory region to physical page allocator ({region_start:x?}, {region_length:x})",
         )
         .unwrap();
         unsafe {

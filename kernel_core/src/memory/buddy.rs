@@ -1,13 +1,13 @@
 //! Buddy allocator for pages.
 
 use core::{
-    ptr::{null, null_mut, NonNull},
+    ptr::{null_mut, NonNull},
     sync::atomic::{AtomicPtr, Ordering},
 };
 
 use snafu::{ensure, OptionExt as _};
 
-use crate::memory::{subtract_ranges, InvalidSizeSnafu, OutOfMemorySnafu, UnknownPtrSnafu};
+use crate::memory::{InvalidSizeSnafu, OutOfMemorySnafu, UnknownPtrSnafu};
 
 use super::{Error, PageAllocator, PageSize, PhysicalAddress};
 
@@ -42,8 +42,8 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     ///
     /// # Safety
     ///
-    /// The memory region provided must be entirely valid memory that is safe to dereference,
-    /// live for the lifetime of the allocator and not be shared outside of the allocator.
+    /// Calling this function implicitly gives ownership of the memory in the region to the
+    /// allocator.
     pub unsafe fn new(page_size: PageSize, memory_start: *mut u8, memory_length: usize) -> Self {
         let page_len = usize::from(page_size);
         assert!(memory_start.is_aligned_to(page_len));
@@ -65,6 +65,14 @@ impl<const MAX_ORDER: usize> BuddyPageAllocator<MAX_ORDER> {
     /// # Arguments
     /// - `region_start`: a pointer to the beginning of the region in the kernel address space.
     /// - `region_length`: the length of the region in bytes.
+    ///
+    /// # Safety
+    /// The memory region provided must be entirely valid memory that is safe to dereference,
+    /// live for the lifetime of the allocator and not be shared outside of the allocator.
+    ///
+    /// # Panics
+    /// - If the region length or pointer is invalid due to alignment, being zero, or being null.
+    /// - If the region is outside of the overall region managed by the allocator provided to [`BuddyPageAllocator::new()`].
     pub unsafe fn add_memory_region(&self, region_start: *mut u8, region_length: usize) -> bool {
         assert!(region_length > 0);
         assert!(!region_start.is_null());
@@ -428,7 +436,9 @@ mod tests {
 
         let allocator = unsafe { BuddyPageAllocator::<16>::new(page_size, memory, four_gb) };
 
-        for (start, len) in subtract_ranges((memory, four_gb), reserved_regions.into_iter()) {
+        for (start, len) in
+            crate::memory::subtract_ranges((memory, four_gb), reserved_regions.into_iter())
+        {
             unsafe {
                 assert!(
                     allocator.add_memory_region(start, len),

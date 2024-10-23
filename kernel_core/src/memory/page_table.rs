@@ -51,15 +51,16 @@ pub enum MemoryKind {
     Device,
 }
 
-/// The correct value that must be written to the Memory Attribute Indirection Register (MAIR_EL1) for [`MemoryProperties`] to correctly encode the meaning of [`MemoryKind`].
+/// The correct value that must be written to the Memory Attribute Indirection Register (`MAIR_EL1`) for [`MemoryProperties`] to correctly encode the meaning of [`MemoryKind`].
 ///
 /// Each byte in the MAIR maps to a [`MemoryKind`].
-/// See `D17.2.97` of the ARMv8 reference for details.
+/// See `D17.2.97` of the `ARMv8` reference for details.
 ///
 /// | Index (LE) | [`MemoryKind`] | Byte Value | Description |
 /// |-------|----------------|------------|-------------|
 /// |  `0`  | [`MemoryKind::Device`] |  `0b0000_0000`   | Device-nGnRE memory |
 /// |  `1`  | [`MemoryKind::Normal`] |  `0b1111_1111`   | Normal memory, write back, read/write allocate, non-transient cache for inner and outer sharing. |
+#[allow(clippy::unusual_byte_groupings)]
 pub const MAIR_VALUE: u64 = 0x00_00_00_00__00_00_ff_00;
 
 impl MemoryKind {
@@ -312,13 +313,8 @@ struct Walker<'a, 's, 'pa, PA: PageAllocator, F> {
     f: &'a mut F,
 }
 
-impl<
-        'a,
-        's,
-        'pa,
-        PA: PageAllocator,
-        F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>,
-    > Walker<'a, 's, 'pa, PA, F>
+impl<PA: PageAllocator, F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Error>>
+    Walker<'_, '_, '_, PA, F>
 {
     fn next_table_for_entry(
         &self,
@@ -427,7 +423,7 @@ pub struct PageTables<'pa, PA: PageAllocator> {
 }
 
 // SAFETY: this is safe because each `PageTables` owns the memory it points to exclusively.
-unsafe impl<'pa, PA: PageAllocator> Send for PageTables<'pa, PA> {}
+unsafe impl<PA: PageAllocator> Send for PageTables<'_, PA> {}
 
 impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// Create a new page tables structure that has no mappings.
@@ -675,7 +671,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                 match entry.decode(level) {
                     DecodedEntry::Empty => {}
                     DecodedEntry::Table(physical_pointer) => {
-                        self.write_table(f, level + 1, physical_pointer.cast().into())?
+                        self.write_table(f, level + 1, physical_pointer.cast().into())?;
                     }
                     DecodedEntry::Block(physical_pointer) => writeln!(
                         f,
@@ -709,7 +705,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     }
 }
 
-impl<'pa, PA: PageAllocator> core::fmt::Debug for PageTables<'pa, PA> {
+impl<PA: PageAllocator> core::fmt::Debug for PageTables<'_, PA> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         writeln!(
             f,
@@ -720,7 +716,7 @@ impl<'pa, PA: PageAllocator> core::fmt::Debug for PageTables<'pa, PA> {
     }
 }
 
-impl<'pa, PA: PageAllocator> Drop for PageTables<'pa, PA> {
+impl<PA: PageAllocator> Drop for PageTables<'_, PA> {
     fn drop(&mut self) {
         self.drop_table(0, self.root);
     }
