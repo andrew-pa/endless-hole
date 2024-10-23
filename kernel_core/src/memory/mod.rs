@@ -91,7 +91,7 @@ impl PhysicalAddress {
 
 impl<T> core::fmt::Debug for PhysicalPointer<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "p:0x{:x}", self.0)
+        write!(f, "p:0x{:016x}", self.0)
     }
 }
 
@@ -361,7 +361,7 @@ pub trait PageAllocator {
     fn allocate_zeroed(&self, num_pages: usize) -> Result<PhysicalAddress, Error> {
         let pages = self.allocate(num_pages)?;
         unsafe {
-            core::ptr::write_bytes(pages.into(), 0, num_pages * self.page_size());
+            core::ptr::write_bytes(pages.cast::<u8>().into(), 0, num_pages * self.page_size());
         }
         Ok(pages)
     }

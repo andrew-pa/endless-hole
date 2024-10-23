@@ -89,7 +89,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     let first_region = memory_regions.next().expect("at least one memory region");
     writeln!(
         uart,
-        "adding first memory region to physical page allocator (0x{:x?}, {:x})",
+        "adding first memory region to physical page allocator ({:x?}, {:x})",
         first_region.0, first_region.1
     )
     .unwrap();
@@ -101,7 +101,8 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     KERNEL_PAGE_TABLES.call_once(|| unsafe {
         let root_table_address = addr_of_mut!(_kernel_page_table_root);
         let mut pt =
-            PageTables::from_existing(pa, PhysicalAddress::from(root_table_address.cast()), true);
+            //PageTables::from_existing(pa, PhysicalAddress::from(root_table_address.cast()), true);
+            PageTables::empty(pa).unwrap();
         let block_size = MapBlockSize::largest_supported_block_size(pa.page_size());
         let memory_size_in_blocks = memory_range
             .1
@@ -123,24 +124,22 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
             },
         )
         .expect("identity map RAM into kernel");
-        let vaddr = VirtualPointerMut::from(uart as *mut _).cast();
+        writeln!(uart, "new page tables = {:?}", pt).unwrap();
+        let vaddr =
+            VirtualPointerMut::from(0xffff000107efe000 as *mut () /* uart as *mut _ */).cast();
         let paddr = pt.physical_address_of(vaddr);
         writeln!(uart, "uart addr {vaddr:?} maps to {paddr:?}").unwrap();
         Mutex::new(pt)
     });
 
-    writeln!(uart, "boo").unwrap();
-
     unsafe {
         flush_tlb_total_el1();
     }
 
-    writeln!(uart, "boo").unwrap();
-
     for (region_start, region_length) in memory_regions {
         writeln!(
             uart,
-            "adding additional memory region to physical page allocator (0x{:x?}, {:x})",
+            "adding additional memory region to physical page allocator ({:x?}, {:x})",
             region_start, region_length
         )
         .unwrap();
@@ -149,6 +148,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
         }
     }
 
+    writeln!(uart, "boo").unwrap();
     // initialize kernel heap
     ALLOCATOR.init(pa);
 

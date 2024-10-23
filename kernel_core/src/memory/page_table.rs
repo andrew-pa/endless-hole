@@ -170,7 +170,7 @@ impl Entry {
     fn for_table(table_address: PhysicalAddress) -> Self {
         let address = usize::from(table_address);
         assert_eq!(address & 0xfff, 0);
-        Self(0b11 | (address as u64))
+        Self(0b11 | (address as u64 & 0x0000_ffff_ffff_f000))
     }
 
     /// Construct a page table entry pointing to a memory block.
@@ -362,6 +362,7 @@ impl<
 /// This structure manages the entire tree of tables.
 pub struct PageTables<'pa, PA: PageAllocator> {
     page_allocator: &'pa PA,
+    /// this is also the number of entries in one table (because a table takes exactly one page).
     entries_per_page: usize,
     root: *mut Entry,
     page_size: PageSize,
@@ -379,7 +380,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// - Returns an error if the page allocator fails to allocate the root table.
     pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
         let root = page_allocator.allocate_zeroed(1)?;
-        unsafe { Ok(Self::from_existing(page_allocator, root, false)) }
+        unsafe { Ok(Self::from_existing(page_allocator, root, true)) }
     }
 
     /// Convert existing page tables in memory into a [`PageTables`] instance.
@@ -598,6 +599,43 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
         None
     }
 
+    fn write_table(
+        &self,
+        f: &mut core::fmt::Formatter<'_>,
+        level: u8,
+        table: *mut Entry,
+    ) -> core::fmt::Result {
+        writeln!(f, "table{level}@{table:x?}: [")?;
+        for i in 0..self.entries_per_page {
+            unsafe {
+                let entry = table.add(i).as_ref().unwrap();
+                if entry.0 == 0 {
+                    continue;
+                }
+                for _ in 0..=level {
+                    write!(f, "\t")?;
+                }
+                write!(f, "{i} R{:016x} ", entry.0)?;
+                match entry.decode(level) {
+                    DecodedEntry::Empty => {}
+                    DecodedEntry::Table(physical_pointer) => {
+                        self.write_table(f, level + 1, physical_pointer.cast().into())?
+                    }
+                    DecodedEntry::Block(physical_pointer) => {
+                        writeln!(f, "block@{physical_pointer:?}")?
+                    }
+                    DecodedEntry::Page(physical_pointer) => {
+                        writeln!(f, "page@{physical_pointer:?}")?
+                    }
+                }
+            }
+        }
+        for _ in 0..level {
+            write!(f, "\t")?;
+        }
+        writeln!(f, "]")
+    }
+
     fn drop_table(&mut self, level: u8, table: *mut Entry) {
         for i in 0..self.entries_per_page {
             let entry = unsafe { table.add(i).read() };
@@ -608,6 +646,17 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
         self.page_allocator
             .free(PhysicalAddress::from(table.cast()), 1)
             .unwrap();
+    }
+}
+
+impl<'pa, PA: PageAllocator> core::fmt::Debug for PageTables<'pa, PA> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        writeln!(
+            f,
+            "PageTables (tag={}, entries/page={})",
+            self.high_tag, self.entries_per_page
+        )?;
+        self.write_table(f, 0, self.root)
     }
 }
 

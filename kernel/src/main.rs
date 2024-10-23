@@ -10,6 +10,7 @@ extern crate alloc;
 
 core::arch::global_asm!(core::include_str!("./start.S"));
 
+mod exception;
 mod memory;
 mod running_image;
 mod uart;
@@ -34,6 +35,7 @@ use kernel_core::{
 pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     unsafe {
         running_image::zero_bss_section();
+        exception::install_exception_vector();
     }
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
