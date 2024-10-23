@@ -49,6 +49,14 @@ pub unsafe fn flush_tlb_total_el1() {
     )
 }
 
+/// Write the MAIR_EL1 register.
+pub unsafe fn write_mair(value: u64) {
+    core::arch::asm!(
+        "msr MAIR_EL1, {val}",
+        val = in(reg) value
+    );
+}
+
 /// Initialize the memory subsystem.
 pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     // create page allocator
@@ -101,8 +109,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     KERNEL_PAGE_TABLES.call_once(|| unsafe {
         let root_table_address = addr_of_mut!(_kernel_page_table_root);
         let mut pt =
-            //PageTables::from_existing(pa, PhysicalAddress::from(root_table_address.cast()), true);
-            PageTables::empty(pa).unwrap();
+            PageTables::from_existing(pa, PhysicalAddress::from(root_table_address.cast()), true);
         let block_size = MapBlockSize::largest_supported_block_size(pa.page_size());
         let memory_size_in_blocks = memory_range
             .1
@@ -124,15 +131,16 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
             },
         )
         .expect("identity map RAM into kernel");
-        writeln!(uart, "new page tables = {:?}", pt).unwrap();
-        let vaddr =
-            VirtualPointerMut::from(0xffff000107efe000 as *mut () /* uart as *mut _ */).cast();
-        let paddr = pt.physical_address_of(vaddr);
-        writeln!(uart, "uart addr {vaddr:?} maps to {paddr:?}").unwrap();
+
         Mutex::new(pt)
     });
 
     unsafe {
+        // TODO: mess with TCR to make sure that page sizes and address sizes are as expected.
+        // install MAIR value that corresponds to the [`MemoryKind`] enum encoding.
+        write_mair(kernel_core::memory::page_table::MAIR_VALUE);
+
+        // Flush the TLB to ensure that the new page table mapping takes effect.
         flush_tlb_total_el1();
     }
 
@@ -148,7 +156,6 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
         }
     }
 
-    writeln!(uart, "boo").unwrap();
     // initialize kernel heap
     ALLOCATOR.init(pa);
 

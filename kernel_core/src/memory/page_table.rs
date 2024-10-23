@@ -7,7 +7,7 @@ use super::{PageAllocator, PageSize, PhysicalAddress, VirtualAddress};
 use PageSize::{FourKiB, SixteenKiB};
 
 /// Defines required cache coherence for memory shared across different cores.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub enum Shareability {
     /// The memory is not shared, each core can have its own cache.
     Local,
@@ -29,8 +29,19 @@ impl Shareability {
     }
 }
 
+impl From<u64> for Shareability {
+    fn from(value: u64) -> Self {
+        match value {
+            0b00 => Shareability::Local,
+            0b10 => Shareability::Global,
+            0b11 => Shareability::Cluster,
+            _ => panic!("unknown shareability flag: 0b{value:b}"),
+        }
+    }
+}
+
 /// Types of caching available for memory operations.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, Debug)]
 pub enum MemoryKind {
     /// "Normal" cached memory.
     #[default]
@@ -40,12 +51,33 @@ pub enum MemoryKind {
     Device,
 }
 
+/// The correct value that must be written to the Memory Attribute Indirection Register (MAIR_EL1) for [`MemoryProperties`] to correctly encode the meaning of [`MemoryKind`].
+///
+/// Each byte in the MAIR maps to a [`MemoryKind`].
+/// See `D17.2.97` of the ARMv8 reference for details.
+///
+/// | Index (LE) | [`MemoryKind`] | Byte Value | Description |
+/// |-------|----------------|------------|-------------|
+/// |  `0`  | [`MemoryKind::Device`] |  `0b0000_0000`   | Device-nGnRE memory |
+/// |  `1`  | [`MemoryKind::Normal`] |  `0b1111_1111`   | Normal memory, write back, read/write allocate, non-transient cache for inner and outer sharing. |
+pub const MAIR_VALUE: u64 = 0x00_00_00_00__00_00_ff_00;
+
 impl MemoryKind {
     #[inline]
     const fn encode(&self) -> u64 {
         match self {
             MemoryKind::Device => 0b000,
             MemoryKind::Normal => 0b001,
+        }
+    }
+}
+
+impl From<u64> for MemoryKind {
+    fn from(value: u64) -> Self {
+        match value {
+            0b000 => MemoryKind::Device,
+            0b001 => MemoryKind::Normal,
+            _ => panic!("unknown memory kind: 0b{value:b}"),
         }
     }
 }
@@ -62,17 +94,41 @@ pub struct MemoryProperties {
     /// Instructions can be fetched from this memory.
     pub executable: bool,
     /// Required cache coherence across cores for this memory.
-    pub sharability: Shareability,
+    pub shareability: Shareability,
 }
 
 impl MemoryProperties {
     fn encode(&self) -> u64 {
         (u64::from(!self.executable) << 54)
             | (u64::from(!self.executable) << 53)
-            | (self.sharability.encode() << 8)
-            | (u64::from(self.writable) << 7)
+            | (self.shareability.encode() << 8)
+            | (u64::from(!self.writable) << 7)
             | (u64::from(self.user_space_access) << 6)
             | (self.kind.encode() << 2)
+    }
+
+    fn decode(raw_entry: u64) -> Self {
+        Self {
+            executable: ((raw_entry >> 54) & 0x1) == 0,
+            shareability: Shareability::from((raw_entry >> 8) & 0b11),
+            writable: ((raw_entry >> 7) & 0x1) == 0,
+            user_space_access: ((raw_entry >> 6) & 0x1) == 1,
+            kind: MemoryKind::from((raw_entry >> 2) & 0b111),
+        }
+    }
+}
+
+impl core::fmt::Debug for MemoryProperties {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "MemProps<{:?} {:?} {}{} {}>",
+            self.shareability,
+            self.kind,
+            if self.writable { "RW" } else { "R" },
+            if self.executable { "X" } else { "" },
+            if self.user_space_access { "*" } else { "K" }
+        )
     }
 }
 
@@ -380,7 +436,7 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
     /// - Returns an error if the page allocator fails to allocate the root table.
     pub fn empty(page_allocator: &'pa PA) -> Result<Self, super::Error> {
         let root = page_allocator.allocate_zeroed(1)?;
-        unsafe { Ok(Self::from_existing(page_allocator, root, true)) }
+        unsafe { Ok(Self::from_existing(page_allocator, root, false)) }
     }
 
     /// Convert existing page tables in memory into a [`PageTables`] instance.
@@ -621,12 +677,16 @@ impl<'pa, PA: PageAllocator> PageTables<'pa, PA> {
                     DecodedEntry::Table(physical_pointer) => {
                         self.write_table(f, level + 1, physical_pointer.cast().into())?
                     }
-                    DecodedEntry::Block(physical_pointer) => {
-                        writeln!(f, "block@{physical_pointer:?}")?
-                    }
-                    DecodedEntry::Page(physical_pointer) => {
-                        writeln!(f, "page@{physical_pointer:?}")?
-                    }
+                    DecodedEntry::Block(physical_pointer) => writeln!(
+                        f,
+                        "block@{physical_pointer:?} {:?}",
+                        MemoryProperties::decode(entry.0)
+                    )?,
+                    DecodedEntry::Page(physical_pointer) => writeln!(
+                        f,
+                        "page@{physical_pointer:?} {:?}",
+                        MemoryProperties::decode(entry.0)
+                    )?,
                 }
             }
         }
