@@ -15,6 +15,9 @@ default:
 clean:
     rm -rf {{out_dir}}
 
+fmt cargo_args="":
+    cargo fmt
+
 # Check formatting, types and lints.
 check cargo_args="" clippy_args="":
     cargo fmt --check {{cargo_args}}

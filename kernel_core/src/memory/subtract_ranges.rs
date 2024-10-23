@@ -301,4 +301,21 @@ mod tests {
         assert_eq!(result[1], (0x11C8 as *mut u8, 56)); // 4552 to 4608
         assert_eq!(result[2], (0x1364 as *mut u8, 132)); // 4964 to 5096
     }
+
+    #[test]
+    fn real_world_4gib() {
+        let whole = (0xffff_0000_40000000 as *mut u8, 0x100000000);
+        let ranges = [
+            (0xffff000041000000 as *mut u8, 0x41bc00),
+            (0xffff0000ffefc000 as *mut u8, 0x2000),
+        ];
+
+        let res: Vec<_> = subtract_ranges(whole, ranges.into_iter()).collect();
+        println!("result = {res:x?}");
+
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0], (0xffff000040000000 as *mut u8, 0x0100_0000));
+        assert_eq!(res[1], (0xffff00004141bc00 as *mut u8, 0xbeae_0400));
+        assert_eq!(res[2], (0xffff0000ffefe000 as *mut u8, 0x4010_2000));
+    }
 }

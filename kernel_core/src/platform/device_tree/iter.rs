@@ -22,7 +22,7 @@ pub struct FlattenedTreeIter<'dt> {
     pub(super) current_offset: usize,
 }
 
-impl<'dt> core::fmt::Debug for FlattenedTreeIter<'dt> {
+impl core::fmt::Debug for FlattenedTreeIter<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("FlattenedTreeIter")
             .field("current_offset", &self.current_offset)
@@ -30,7 +30,7 @@ impl<'dt> core::fmt::Debug for FlattenedTreeIter<'dt> {
     }
 }
 
-impl<'dt> FlattenedTreeIter<'dt> {
+impl FlattenedTreeIter<'_> {
     /// Skips over a node and all its children in the flattened tree iterator.
     /// Assumes that the iterator has just yielded a [`fdt::Token::StartNode`] for the node to be skiped.
     pub fn skip_node(&mut self) {
@@ -112,7 +112,7 @@ impl<'dt> MemRegionIter<'dt> {
     }
 }
 
-impl<'dt> Iterator for MemRegionIter<'dt> {
+impl Iterator for MemRegionIter<'_> {
     type Item = (u64, u64);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -224,7 +224,7 @@ pub struct RegistersIter<'a, 'dt> {
     pub(super) offset: usize,
 }
 
-impl<'a, 'dt> Iterator for RegistersIter<'a, 'dt> {
+impl Iterator for RegistersIter<'_, '_> {
     type Item = (usize, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -276,7 +276,7 @@ pub struct NodeItem<'dt> {
     pub properties: NodePropertyIter<'dt>,
 }
 
-impl<'dt, 'query> Iterator for NodesNamedIter<'dt, 'query> {
+impl<'dt> Iterator for NodesNamedIter<'dt, '_> {
     type Item = NodeItem<'dt>;
 
     fn next(&mut self) -> Option<Self::Item> {

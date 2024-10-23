@@ -1,6 +1,21 @@
 //! Memory managment algorithms and policies.
+//!
+//! # Pointers and Memory Addresses
+//! The kernel has a plethora of different types of things that are memory addresses.
+//! This table details each of these types in order of safety/abstraction.
+//! Using the type-system to keep these straight helps improve code readability and helps prevent subtle
+//! errors from assuming the address space of pointers.
+//!
+//! | Type                  | Dereference | Description |
+//! |-----------------------|-------------|-------------|
+//! | `&T`, `&mut T`        | Safe, trivial | Garden-variety Rust borrow, has the strongest safety gurantees. All of Rust's normal rules apply. References are always kernel-space addresses, since they can be dereferenced via the MMU while in EL1. |
+//! | `*const T`, `*mut T`  | Unsafe | Raw pointer with fewer safety gurantees from Rust. Still should be a kernel-space address that is dereferenceable via the MMU while in EL1. |
+//! | [`VirtualPointer<T>`], [`VirtualPointerMut<T>`] | If kernel-space: unsafe but trivial. Otherwise requires a manual page table lookup. | A virtual address in some address space. If the address space is the kernel's, then this is trivially convertable into a raw pointer. Otherwise a [`PageTables`] instance must be consulted to lookup the actual physical address that it is mapped to. |
+//! | [`VirtualAddress`]    | Same as `VirtualPointer` but must assume type. | An address in a virtual memory address space that is not associated with a type, but indicates some location. Assumed mutable for convenience. |
+//! | [`PhysicalPointer<T>`]| With conversion to kernel-space, unsafe. | A pointer to something in physical memory, i.e. the untranslated address space. Because the kernel virtual address space is identity mapped, these are trivially convertable to a [`VirtualPointer<T>`] or `*mut T`. All physical addresses are assumed to be mutable from the kernel's perspective. |
+//! | [`PhysicalAddress`]   | Same as `PhysicalPointer` but must assume type. | An address in the physical memory address space that is not associated with a type, but indicates some location.
 
-use core::{marker::PhantomData, ptr::NonNull};
+use core::{marker::PhantomData, num::NonZeroUsize};
 use snafu::Snafu;
 
 mod buddy;
@@ -12,21 +27,71 @@ pub use heap::HeapAllocator;
 mod subtract_ranges;
 pub use subtract_ranges::*;
 
+pub mod page_table;
+pub use page_table::PageTables;
+
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
 /// must be `0xffff` to select the kernel page tables, so a `*mut T` is not quite but very close to
 /// the physical address of the `T`.
-///
-/// The type `T` is the type of the object pointed to. The default of `()` is given because often
-/// physical addresses arise that don't point to concrete objects.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
-pub struct PhysicalPointer<T = ()>(usize, PhantomData<*mut T>);
+pub struct PhysicalPointer<T>(usize, PhantomData<*mut T>);
+
+/// A physical 48-bit address that does not dereference to any particular type of value.
+pub type PhysicalAddress = PhysicalPointer<()>;
+
+impl<T> PhysicalPointer<T> {
+    /// Offset this pointer forward by `count` number of `T`s.
+    #[inline]
+    #[must_use]
+    #[allow(clippy::should_implement_trait)]
+    pub const fn add(self, count: usize) -> Self {
+        self.byte_add(count * size_of::<T>())
+    }
+
+    /// Offset this pointer forward by `count` bytes.
+    #[inline]
+    #[must_use]
+    pub const fn byte_add(self, count: usize) -> Self {
+        Self(self.0 + count, PhantomData)
+    }
+
+    /// Cast this pointer from type `T` to type `U`.
+    #[inline]
+    #[must_use]
+    pub const fn cast<U>(self) -> PhysicalPointer<U> {
+        PhysicalPointer(self.0, PhantomData)
+    }
+
+    /// Check to see if this pointer is null.
+    #[inline]
+    #[must_use]
+    pub const fn is_null(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Returns whether the pointer is aligned to `alignment`.
+    #[inline]
+    #[must_use]
+    pub const fn is_aligned_to(self, alignment: usize) -> bool {
+        self.0 % alignment == 0
+    }
+}
+
+impl PhysicalAddress {
+    /// Convert a pointer of any type into a virtual address with no type.
+    #[inline]
+    #[must_use]
+    pub fn from_ptr<T>(ptr: *mut T) -> Self {
+        Self(ptr as usize, PhantomData)
+    }
+}
 
 impl<T> core::fmt::Debug for PhysicalPointer<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "p:0x{:x}", self.0)
+        write!(f, "p:0x{:016x}", self.0)
     }
 }
 
@@ -63,7 +128,146 @@ impl<T> From<*mut T> for PhysicalPointer<T> {
 
 impl<T> From<PhysicalPointer<T>> for *mut T {
     fn from(val: PhysicalPointer<T>) -> Self {
-        (val.0 | 0xffff_0000_0000_0000) as _
+        #[cfg(not(test))]
+        {
+            (val.0 | 0xffff_0000_0000_0000) as _
+        }
+        #[cfg(test)]
+        {
+            // HACK: Because the test environment is in user-space, we assume that physical pointers are actually untagged, but fit in the 48-bit space.
+            val.0 as _
+        }
+    }
+}
+
+/// A 48-bit virtual address space pointer to a `T` in some address space.
+/// Analogous to a `*const T`.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VirtualPointer<T>(usize, PhantomData<T>);
+
+/// A 48-bit virtual address space pointer to a mutable `T` in some address space.
+/// Analogous to a `*mut T`.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(transparent)]
+pub struct VirtualPointerMut<T>(usize, PhantomData<T>);
+
+/// A virtual 48-bit address that does not dereference to any particular type of value.
+pub type VirtualAddress = VirtualPointerMut<()>;
+
+/// The error returned from `TryFrom` implementations if the `value` pointer is not in the kernel address space.
+pub struct NotInKernelAddressSpaceError;
+
+macro_rules! virtual_pointer_impl {
+    ($vpt:ident) => {
+        impl<T> $vpt<T> {
+            /// Returns true if this pointer is in the kernel address space.
+            #[inline]
+            #[must_use]
+            pub fn is_in_kernel_space(&self) -> bool {
+                self.0 & 0xffff_0000_0000_0000 == 0xffff_0000_0000_0000
+            }
+
+            /// Offset this pointer forward by `count` number of `T`s.
+            #[inline]
+            #[must_use]
+            #[allow(clippy::should_implement_trait)]
+            pub fn add(self, count: usize) -> Self {
+                self.byte_add(count * size_of::<T>())
+            }
+
+            /// Offset this pointer forward by `count` bytes.
+            #[inline]
+            #[must_use]
+            pub fn byte_add(self, count: usize) -> Self {
+                Self(self.0 + count, PhantomData)
+            }
+
+            /// Cast this pointer from type `T` to type `U`.
+            #[inline]
+            #[must_use]
+            pub fn cast<U>(self) -> $vpt<U> {
+                $vpt(self.0, PhantomData)
+            }
+
+            /// Returns whether the pointer is aligned to `alignment`.
+            #[inline]
+            #[must_use]
+            pub const fn is_aligned_to(self, alignment: usize) -> bool {
+                self.0 % alignment == 0
+            }
+        }
+
+        impl<T> core::fmt::Debug for $vpt<T> {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "v:0x{:x}", self.0)
+            }
+        }
+
+        impl<T> From<usize> for $vpt<T> {
+            fn from(value: usize) -> Self {
+                $vpt(value, PhantomData)
+            }
+        }
+
+        impl<T> From<$vpt<T>> for usize {
+            fn from(val: $vpt<T>) -> Self {
+                val.0
+            }
+        }
+
+        impl<T> From<*const T> for $vpt<T> {
+            fn from(value: *const T) -> Self {
+                $vpt(value as usize, PhantomData)
+            }
+        }
+
+        impl<T> TryFrom<$vpt<T>> for *const T {
+            type Error = NotInKernelAddressSpaceError;
+
+            fn try_from(value: $vpt<T>) -> Result<Self, Self::Error> {
+                value
+                    .is_in_kernel_space()
+                    .then_some(value.0 as _)
+                    .ok_or(NotInKernelAddressSpaceError)
+            }
+        }
+
+        impl<T> From<PhysicalPointer<T>> for $vpt<T> {
+            fn from(value: PhysicalPointer<T>) -> Self {
+                Self(value.0 | 0xffff_0000_0000_0000, PhantomData)
+            }
+        }
+
+        impl<T> TryFrom<$vpt<T>> for PhysicalPointer<T> {
+            type Error = NotInKernelAddressSpaceError;
+
+            fn try_from(value: $vpt<T>) -> Result<Self, Self::Error> {
+                value
+                    .is_in_kernel_space()
+                    .then_some(PhysicalPointer::from(value.0 & 0x0000_ffff_ffff_ffff))
+                    .ok_or(NotInKernelAddressSpaceError)
+            }
+        }
+    };
+}
+virtual_pointer_impl!(VirtualPointer);
+virtual_pointer_impl!(VirtualPointerMut);
+
+impl<T> From<*mut T> for VirtualPointerMut<T> {
+    fn from(value: *mut T) -> Self {
+        VirtualPointerMut(value as usize, PhantomData)
+    }
+}
+
+impl<T> TryFrom<VirtualPointerMut<T>> for *mut T {
+    type Error = NotInKernelAddressSpaceError;
+
+    fn try_from(value: VirtualPointerMut<T>) -> Result<Self, Self::Error> {
+        value
+            .is_in_kernel_space()
+            .then_some(value.0 as _)
+            .ok_or(NotInKernelAddressSpaceError)
     }
 }
 
@@ -78,44 +282,116 @@ pub enum Error {
     UnknownPtr,
 }
 
-type Result<T> = core::result::Result<T, Error>;
+/// The size of a single memory page.
+/// Defined to be equal to the size in bytes of the page.
+///
+/// There are only a fixed number of supported values because the hardware only supports a few configurations.
+#[derive(Eq, PartialEq, Clone, Copy, Debug)]
+pub enum PageSize {
+    /// A page is 4 kibibytes (2^12 bytes).
+    FourKiB,
+    /// A page is 16 kibibytes (2^14 bytes).
+    SixteenKiB,
+}
+
+impl From<usize> for PageSize {
+    fn from(value: usize) -> Self {
+        match value {
+            0x1000 => PageSize::FourKiB,
+            0x4000 => PageSize::SixteenKiB,
+            _ => panic!("unsupported page size {value}"),
+        }
+    }
+}
+
+impl From<PageSize> for usize {
+    fn from(value: PageSize) -> Self {
+        match value {
+            PageSize::FourKiB => 0x1000,
+            PageSize::SixteenKiB => 0x4000,
+        }
+    }
+}
+
+impl From<PageSize> for NonZeroUsize {
+    fn from(value: PageSize) -> Self {
+        unsafe { NonZeroUsize::new_unchecked(usize::from(value)) }
+    }
+}
+
+impl core::ops::Mul<usize> for PageSize {
+    type Output = usize;
+
+    fn mul(self, rhs: usize) -> Self::Output {
+        usize::from(self) * rhs
+    }
+}
+
+impl core::ops::Mul<PageSize> for usize {
+    type Output = usize;
+
+    fn mul(self, rhs: PageSize) -> Self::Output {
+        self * usize::from(rhs)
+    }
+}
 
 /// A memory allocator that provides pages of physical memory.
 ///
-/// Implementers of this trait must provide internal synchronization.
+/// Implementers of this trait must provide internal synchronization and each associated function
+/// should be re-entrant.
 pub trait PageAllocator {
-    /// The size in bytes of one page.
+    /// The size of one page in this allocator.
     ///
     /// This value must remain the same throughout the lifetime of the allocator.
-    fn page_size(&self) -> usize;
+    fn page_size(&self) -> PageSize;
 
     /// Allocate `num_pages` of memory, returning a pointer to the beginning which will be page-aligned.
-    ///
-    /// The pointer is a valid kernel space pointer, but can be translated to a raw physical
-    /// address with [`PhysicalPointer`] if need be.
     ///
     /// # Errors
     /// - [`Error::OutOfMemory`] if there is not enough memory to allocate `num_pages`.
     /// - [`Error::InvalidSize`] if `num_pages` is zero.
-    fn allocate(&self, num_pages: usize) -> Result<NonNull<u8>>;
+    fn allocate(&self, num_pages: usize) -> Result<PhysicalAddress, Error>;
+
+    /// Allocate `num_pages` of memory, returning a pointer to the beginning which will be page-aligned.
+    /// Every byte of the pages will be set to zero.
+    ///
+    /// # Errors
+    /// - [`Error::OutOfMemory`] if there is not enough memory to allocate `num_pages`.
+    /// - [`Error::InvalidSize`] if `num_pages` is zero.
+    fn allocate_zeroed(&self, num_pages: usize) -> Result<PhysicalAddress, Error> {
+        let pages = self.allocate(num_pages)?;
+        unsafe {
+            core::ptr::write_bytes(pages.cast::<u8>().into(), 0, num_pages * self.page_size());
+        }
+        Ok(pages)
+    }
 
     /// Free the pages pointed to by `pages` that points to a region of `num_pages`.
     /// This pointer must have been returned at some point from a call to [`PageAllocator::allocate`] that allocated exactly `num_pages`.
     ///
-    // TODO: what happens if two threads free the same block??
-    ///
     /// # Errors
     /// - [`Error::UnknownPtr`] if `pages` is null or was not allocated by this allocator.
-    fn free(&self, pages: NonNull<u8>, num_pages: usize) -> Result<()>;
+    fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error>;
+}
+
+/// Abstract operations provided by the Memory Managment Unit (MMU).
+pub trait MemoryManagmentUnit {
+    /// Make a page table data structure current in the MMU so it is used for lookups.
+    ///
+    /// # Safety
+    ///
+    /// The page tables provided must be valid or else this function has undefined behavior.
+    /// Valid page tables for the kernel must map the caller's return address correctly or else this has undefined behavior. Likewise with the stack, etc.
+    unsafe fn activate_page_tables<PA: PageAllocator>(&self, tables: &PageTables<'_, PA>);
 }
 
 #[cfg(test)]
 mod tests {
     use snafu::{ensure, OptionExt};
 
-    use crate::memory::{InvalidSizeSnafu, OutOfMemorySnafu, UnknownPtrSnafu};
+    use crate::memory::{InvalidSizeSnafu, OutOfMemorySnafu, PhysicalPointer, UnknownPtrSnafu};
 
-    use super::PageAllocator;
+    use super::{Error, PageAllocator, PageSize, PhysicalAddress};
 
     /// Generate tests to ensure correct implementation of the [`PageAllocator`] trait.
     ///
@@ -133,7 +409,6 @@ mod tests {
                     fn page_size_consistency() {
                         let (cx, allocator) = $setup_allocator();
                         let page_size = allocator.page_size();
-                        assert!(page_size > 0, "Page size should be greater than 0");
                         // Allocating multiple times should return the same page size
                         for _ in 0..10 {
                             assert_eq!(allocator.page_size(), page_size, "Page size should remain constant");
@@ -152,10 +427,12 @@ mod tests {
                     fn allocate_pages_once(num_pages: usize) {
                         let (cx, allocator) = $setup_allocator();
                         let page_size = allocator.page_size();
-                        let ptr = allocator.allocate(num_pages).expect("Failed to allocate multiple pages");
+                        let pages = allocator.allocate(num_pages).expect("Failed to allocate multiple pages");
+                        let ptr: *mut () = pages.into();
                         // Ensure the memory address is aligned to the page size
-                        assert!(ptr.is_aligned_to(page_size),  "Pointer should be page-aligned");
-                        allocator.free(ptr, num_pages).expect("Failed to free allocated pages");
+                        assert!(!ptr.is_null());
+                        assert!(ptr.is_aligned_to(page_size.into()),  "Pointer should be page-aligned");
+                        allocator.free(pages, num_pages).expect("Failed to free allocated pages");
                         $cleanup_allocator(cx, allocator);
                     }
 
@@ -173,6 +450,7 @@ mod tests {
                     fn double_free_trivial() {
                         let (cx, allocator) = $setup_allocator();
                         let ptr = allocator.allocate(1).expect("Failed to allocate a page");
+                        assert!(!ptr.is_null());
                         allocator.free(ptr, 1).expect("Failed to free allocated page");
                         let result = allocator.free(ptr, 1);
                         assert!(matches!(result, Err(Error::UnknownPtr)), "Double free should fail");
@@ -230,6 +508,7 @@ mod tests {
                         let num_pages = 8;
                         for _ in 0..64 {
                             let ptr = allocator.allocate(num_pages).expect("Failed to allocate pages");
+                            assert!(!ptr.is_null());
                             allocator.free(ptr, num_pages).expect("Failed to free allocated pages");
                         }
                         $cleanup_allocator(cx, allocator);
@@ -328,6 +607,7 @@ mod tests {
 
                         for _ in 0..128 {
                             let ptr = allocator.allocate(num_pages).expect("Failed to allocate pages");
+                            assert!(!ptr.is_null());
                             allocator.free(ptr, num_pages).expect("Failed to free allocated pages");
                         }
                         $cleanup_allocator(cx, allocator);
@@ -345,6 +625,7 @@ mod tests {
                         let mut ptrs = std::vec::Vec::new();
                         for _ in 0..32 {
                             let ptr = allocator.allocate(num_pages).expect("Failed to allocate pages");
+                            assert!(!ptr.is_null());
                             ptrs.push(ptr);
                         }
 
@@ -367,6 +648,7 @@ mod tests {
                         let mut ptrs = std::vec::Vec::new();
                         for _ in 0..32 {
                             let ptr = allocator.allocate(num_pages).expect("Failed to allocate pages");
+                            assert!(!ptr.is_null());
                             ptrs.push(ptr);
                         }
 
@@ -390,6 +672,7 @@ mod tests {
                         let mut ptrs = std::vec::Vec::new();
                         for _ in 0..32 {
                             let ptr = allocator.allocate(num_pages).expect("Failed to allocate pages");
+                            assert!(!ptr.is_null());
                             ptrs.push(ptr);
                         }
 
@@ -411,7 +694,6 @@ mod tests {
     }
 
     use core::alloc::Layout;
-    use core::ptr::NonNull;
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
@@ -419,7 +701,7 @@ mod tests {
     ///
     /// This allocator uses the system allocator to allocate the underlying memory.
     pub struct MockPageAllocator {
-        page_size: usize,
+        page_size: PageSize,
         max_pages: usize,
         allocated_pages: Arc<Mutex<HashMap<*mut u8, usize>>>, // Map from pointer to number of pages
         total_allocated: Arc<Mutex<usize>>,                   // Tracks total allocated pages
@@ -429,8 +711,7 @@ mod tests {
 
     impl MockPageAllocator {
         /// Create a new `MockAllocator` with the given page size and maximum number of pages.
-        pub fn new(page_size: usize, max_pages: usize) -> Self {
-            assert!(page_size > 0);
+        pub fn new(page_size: PageSize, max_pages: usize) -> Self {
             assert!(max_pages > 0);
             MockPageAllocator {
                 page_size,
@@ -439,14 +720,19 @@ mod tests {
                 total_allocated: Arc::new(Mutex::new(0)),
             }
         }
+
+        pub fn end_check(self) {
+            assert!(self.allocated_pages.lock().unwrap().is_empty());
+            assert_eq!(*self.total_allocated.lock().unwrap(), 0);
+        }
     }
 
     impl PageAllocator for MockPageAllocator {
-        fn page_size(&self) -> usize {
+        fn page_size(&self) -> PageSize {
             self.page_size
         }
 
-        fn allocate(&self, num_pages: usize) -> super::Result<NonNull<u8>> {
+        fn allocate(&self, num_pages: usize) -> Result<PhysicalAddress, Error> {
             ensure!(num_pages > 0, InvalidSizeSnafu);
 
             let mut total_allocated = self.total_allocated.lock().unwrap();
@@ -458,11 +744,10 @@ mod tests {
             );
 
             // Calculate the total size in bytes for the allocation
-            let total_size = self
-                .page_size
+            let total_size = usize::from(self.page_size)
                 .checked_mul(num_pages)
                 .context(OutOfMemorySnafu)?;
-            let layout = Layout::from_size_align(total_size, self.page_size).unwrap();
+            let layout = Layout::from_size_align(total_size, self.page_size.into()).unwrap();
 
             unsafe {
                 // Allocate the memory
@@ -476,29 +761,31 @@ mod tests {
                 // Update the total allocated pages count
                 *total_allocated += num_pages;
 
-                // already checked
-                Ok(NonNull::new_unchecked(ptr))
+                Ok(PhysicalPointer::from(ptr.cast()))
             }
         }
 
-        fn free(&self, pages: NonNull<u8>, num_pages: usize) -> super::Result<()> {
+        fn free(&self, pages: PhysicalAddress, num_pages: usize) -> Result<(), Error> {
+            let pages_ptr: *mut u8 = pages.cast().into();
+            ensure!(!pages_ptr.is_null(), UnknownPtrSnafu);
+
             let num_pages_recorded = {
                 let mut allocated_pages = self.allocated_pages.lock().unwrap();
 
                 // Ensure the pointer was allocated by this allocator and get the number of pages allocated
                 allocated_pages
-                    .remove(&pages.as_ptr())
+                    .remove(&pages_ptr)
                     .context(UnknownPtrSnafu)?
             };
 
             assert_eq!(num_pages, num_pages_recorded);
 
             // Deallocate the memory
-            let total_size = self.page_size * num_pages_recorded;
-            let layout = Layout::from_size_align(total_size, self.page_size).unwrap();
+            let total_size = usize::from(self.page_size) * num_pages_recorded;
+            let layout = Layout::from_size_align(total_size, self.page_size.into()).unwrap();
 
             unsafe {
-                std::alloc::dealloc(pages.as_ptr(), layout);
+                std::alloc::dealloc(pages_ptr, layout);
             }
 
             // Update the total allocated pages count
@@ -510,12 +797,11 @@ mod tests {
     }
 
     fn setup_allocator() -> ((), MockPageAllocator) {
-        ((), MockPageAllocator::new(4096, 1024))
+        ((), MockPageAllocator::new(PageSize::FourKiB, 1024))
     }
 
     fn cleanup_allocator(_cx: (), allocator: MockPageAllocator) {
-        assert!(allocator.allocated_pages.lock().unwrap().is_empty());
-        assert_eq!(*allocator.total_allocated.lock().unwrap(), 0);
+        allocator.end_check()
     }
 
     test_page_allocator!(MockPageAllocator, setup_allocator, cleanup_allocator);

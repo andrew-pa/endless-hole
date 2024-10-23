@@ -46,7 +46,7 @@ pub const HEADER_SIZE: usize = 10 * 4;
 /// The magic value expected in the device tree header.
 pub const HEADER_EXPECTED_MAGIC: u32 = 0xd00d_feed;
 
-impl<'a> BlobHeader<'a> {
+impl BlobHeader<'_> {
     /// Magic number. Should equal [`HEADER_EXPECTED_MAGIC`].
     #[must_use]
     pub fn magic(&self) -> u32 {
@@ -99,7 +99,7 @@ impl<'a> BlobHeader<'a> {
     }
 }
 
-impl<'a> core::fmt::Debug for BlobHeader<'a> {
+impl core::fmt::Debug for BlobHeader<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BlobHeader")
             .field("magic", &self.magic())
