@@ -1,4 +1,4 @@
-use super::{ExceptionSyndromeRegister, Registers};
+use kernel_core::exceptions::{ExceptionSyndromeRegister, Registers};
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.
