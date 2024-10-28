@@ -11,7 +11,6 @@ extern crate alloc;
 core::arch::global_asm!(core::include_str!("./start.S"));
 
 mod exception;
-mod logger;
 mod memory;
 mod running_image;
 mod uart;
@@ -20,7 +19,7 @@ use core::fmt::Write;
 
 use kernel_core::{
     logger::Logger,
-    memory::{PageAllocator, PhysicalPointer},
+    memory::PhysicalPointer,
     platform::device_tree::{DeviceTree, Value as DTValue},
 };
 use log::{debug, info};

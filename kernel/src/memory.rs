@@ -5,7 +5,7 @@
 //! - the MMU and the kernel page tables
 //! - the Rust heap
 use crate::running_image;
-use core::{fmt::Write, ptr::addr_of_mut};
+use core::ptr::addr_of_mut;
 use itertools::Itertools as _;
 use kernel_core::{
     memory::{

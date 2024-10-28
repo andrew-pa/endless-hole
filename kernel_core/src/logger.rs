@@ -30,7 +30,7 @@ pub struct ChunkWriteGuard<'a> {
     buffer: &'a mut [u8],
 }
 
-impl<'a> ChunkWriteGuard<'a> {
+impl ChunkWriteGuard<'_> {
     /// Marks the chunk as full with the given size and consumes the guard
     pub fn finish(self, actual_size: usize) {
         // Ensure that data writes are visible before updating the status
@@ -41,7 +41,7 @@ impl<'a> ChunkWriteGuard<'a> {
     }
 }
 
-impl<'a> core::ops::Deref for ChunkWriteGuard<'a> {
+impl core::ops::Deref for ChunkWriteGuard<'_> {
     type Target = [u8];
 
     fn deref(&self) -> &Self::Target {
@@ -49,7 +49,7 @@ impl<'a> core::ops::Deref for ChunkWriteGuard<'a> {
     }
 }
 
-impl<'a> core::ops::DerefMut for ChunkWriteGuard<'a> {
+impl core::ops::DerefMut for ChunkWriteGuard<'_> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.buffer
     }
@@ -73,7 +73,7 @@ impl LogChunk {
     }
 
     /// Attempts to acquire the chunk for writing.
-    /// Returns a WriteGuard that provides safe access to the buffer and must be used
+    /// Returns a [`ChunkWriteGuard`] that provides safe access to the buffer and must be used
     /// to mark the chunk as full when writing is complete.
     fn try_acquire_for_write(&self) -> Option<ChunkWriteGuard<'_>> {
         self.status_and_size
@@ -153,19 +153,15 @@ impl<S: LogSink, const NUM_CHUNKS_IN_BUFFER: usize> Logger<S, NUM_CHUNKS_IN_BUFF
         }
     }
 
-    /// Flush log chunks to the sink, given that we could acquire it.
-    fn flush_internal(&self, sink: &mut S) {
-        // TODO: we need to have a limit on how many chunks we send before giving up to make sure
-        // that this function will hault, otherwise you could end up with one thread chasing the
-        // other in the log buffer forever.
-
+    /// Flush up to `limit` log chunks to the sink, given that we could acquire it.
+    fn flush_internal(&self, sink: &mut S, limit: usize) {
         // Send overflow message if any logs were lost.
         let overflow_count = self.overflow_count.swap(0, Ordering::Acquire);
         if overflow_count > 0 {
             sink.accept(b"\x1b[31mlog overflow!\x1b[0m");
         }
 
-        loop {
+        for _ in 0..limit {
             let read_index = self.read_index.load(Ordering::Acquire);
             let write_index = self.write_index.load(Ordering::Acquire);
 
@@ -227,13 +223,13 @@ impl<S: LogSink + Send, const NUM_CHUNKS_IN_BUFFER: usize> Log for Logger<S, NUM
 
         // Attempt to flush the buffer if possible.
         if let Some(mut sink_guard) = self.sink.try_lock() {
-            self.flush_internal(&mut *sink_guard);
+            self.flush_internal(&mut *sink_guard, NUM_CHUNKS_IN_BUFFER / 3);
         }
     }
 
     fn flush(&self) {
         let mut sink_guard = self.sink.lock();
-        self.flush_internal(&mut *sink_guard);
+        self.flush_internal(&mut *sink_guard, NUM_CHUNKS_IN_BUFFER);
     }
 }
 
@@ -290,7 +286,7 @@ impl<'a, S: LogSink, const N: usize> RingBufferWriter<'a, S, N> {
     }
 }
 
-impl<'a, S: LogSink, const N: usize> core::fmt::Write for RingBufferWriter<'a, S, N> {
+impl<S: LogSink, const N: usize> core::fmt::Write for RingBufferWriter<'_, S, N> {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let mut s = s.as_bytes();
         while !s.is_empty() {
@@ -324,7 +320,7 @@ impl<'a, S: LogSink, const N: usize> core::fmt::Write for RingBufferWriter<'a, S
     }
 }
 
-impl<'a, S: LogSink, const N: usize> Drop for RingBufferWriter<'a, S, N> {
+impl<S: LogSink, const N: usize> Drop for RingBufferWriter<'_, S, N> {
     fn drop(&mut self) {
         self.finish_chunk();
     }

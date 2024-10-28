@@ -762,7 +762,7 @@ mod tests {
                 .into_iter(),
             ) as _
         } else {
-            Box::new((0..page_count).into_iter()) as _
+            Box::new(0..page_count) as _
         };
         for page_offset in pages_to_check {
             let offset = page_size * page_offset;

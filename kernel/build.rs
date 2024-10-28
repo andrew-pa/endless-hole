@@ -21,7 +21,7 @@ fn emit_info() {
         .add_instructions(&git)
         .unwrap()
         .emit()
-        .unwrap()
+        .unwrap();
 }
 
 fn main() {
