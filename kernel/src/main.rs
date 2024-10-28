@@ -11,6 +11,7 @@ extern crate alloc;
 core::arch::global_asm!(core::include_str!("./start.S"));
 
 mod exception;
+mod logger;
 mod memory;
 mod running_image;
 mod uart;
@@ -18,9 +19,14 @@ mod uart;
 use core::fmt::Write;
 
 use kernel_core::{
+    logger::Logger,
     memory::{PageAllocator, PhysicalPointer},
     platform::device_tree::{DeviceTree, Value as DTValue},
 };
+use log::{debug, info};
+use spin::once::Once;
+
+static LOGGER: Once<Logger<uart::PL011>> = Once::new();
 
 /// The main entry point for the kernel.
 ///
@@ -47,36 +53,36 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         // TODO: default to QEMU virt board UART for now, should be platform default
         .map_or(b"/pl011@9000000" as &[u8], |p| &p[0..p.len() - 1]);
 
-    let mut uart =
-        uart::PL011::from_device_tree(&device_tree, stdout_device_path).expect("init UART");
+    let uart = uart::PL011::from_device_tree(&device_tree, stdout_device_path).expect("init UART");
 
-    writeln!(
-        &mut uart,
-        "Hello, world! Using `{}` for debug logs.",
-        core::str::from_utf8(stdout_device_path).unwrap()
-    )
-    .unwrap();
+    log::set_max_level(log::LevelFilter::max());
+    log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();
+
+    info!(
+        "\x1b[1mEndless Hole 🕳️\x1b[0m v{} (git: {}@{})",
+        env!("CARGO_PKG_VERSION"),
+        env!("VERGEN_GIT_BRANCH"),
+        env!("VERGEN_GIT_SHA"),
+    );
+
+    debug!("Build Timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
+
+    debug!(
+        "Kernel memory region: {:x?}; Stdout device path: {};",
+        unsafe { running_image::memory_region() },
+        core::str::from_utf8(stdout_device_path).unwrap(),
+    );
 
     if let Some(board_model) = device_tree
         .find_property(b"/model")
         .and_then(DTValue::into_string)
     {
-        writeln!(&mut uart, "Board model: {board_model:?}").unwrap();
+        info!("Board model: {board_model:?}");
     }
 
-    writeln!(&mut uart, "kernel memory region {:x?}", unsafe {
-        running_image::memory_region()
-    })
-    .unwrap();
+    memory::init(&device_tree);
 
-    memory::init(&device_tree, &mut uart);
-
-    writeln!(
-        &mut uart,
-        "page size = {:?}",
-        memory::page_allocator().page_size()
-    )
-    .unwrap();
+    info!("Boot succesful!");
 
     #[allow(clippy::empty_loop)]
     loop {}

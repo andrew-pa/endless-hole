@@ -13,6 +13,7 @@
 #[macro_use]
 extern crate std;
 
+pub mod logger;
 pub mod memory;
 pub mod platform;
 
