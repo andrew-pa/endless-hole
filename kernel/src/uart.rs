@@ -5,6 +5,7 @@
 use core::fmt::Write;
 
 use kernel_core::{
+    logger::LogSink,
     memory::PhysicalPointer,
     platform::device_tree::{DeviceTree, Value},
 };
@@ -13,6 +14,9 @@ use kernel_core::{
 pub struct PL011 {
     base_address: *mut u8,
 }
+
+// SAFETY: It's fine to move the pointer as long as it doesn't get duplicated!
+unsafe impl Send for PL011 {}
 
 impl PL011 {
     /// Configure the driver using information from a device tree node.
@@ -45,5 +49,15 @@ impl Write for PL011 {
             }
         }
         Ok(())
+    }
+}
+
+impl LogSink for PL011 {
+    fn accept(&mut self, chunk: &[u8]) {
+        for byte in chunk {
+            unsafe {
+                self.base_address.write_volatile(*byte);
+            }
+        }
     }
 }

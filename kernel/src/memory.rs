@@ -5,7 +5,7 @@
 //! - the MMU and the kernel page tables
 //! - the Rust heap
 use crate::running_image;
-use core::{fmt::Write, ptr::addr_of_mut};
+use core::ptr::addr_of_mut;
 use itertools::Itertools as _;
 use kernel_core::{
     memory::{
@@ -14,6 +14,7 @@ use kernel_core::{
     },
     platform::device_tree::DeviceTree,
 };
+use log::{debug, info, trace};
 use spin::{once::Once, Mutex};
 
 extern "C" {
@@ -57,7 +58,7 @@ pub unsafe fn write_mair(value: u64) {
 }
 
 /// Initialize the memory subsystem.
-pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
+pub fn init(dt: &DeviceTree<'_>) {
     // create page allocator
     let page_size = PageSize::FourKiB;
     let memory_node = dt
@@ -83,23 +84,20 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
         (memory_start.cast().into(), memory_range.1),
         reserved_regions.into_iter(),
     );
-    writeln!(
-        uart,
-        "memory range = {memory_start:?}{memory_range:x?}, reserved = {reserved_regions:x?}"
-    )
-    .unwrap();
+    debug!(
+        "memory range = {memory_start:?}{memory_range:x?}, reserved = {reserved_regions:x?}, page size = {page_size:?}"
+    );
 
     let pa = PAGE_ALLOCATOR.call_once(|| unsafe {
         BuddyPageAllocator::new(page_size, memory_start.cast().into(), memory_range.1)
     });
 
     let first_region = memory_regions.next().expect("at least one memory region");
-    writeln!(
-        uart,
+    trace!(
         "adding first memory region to physical page allocator ({:x?}, {:x})",
-        first_region.0, first_region.1
-    )
-    .unwrap();
+        first_region.0,
+        first_region.1
+    );
     unsafe {
         assert!(pa.add_memory_region(first_region.0, first_region.1));
     }
@@ -113,11 +111,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
         let memory_size_in_blocks = memory_range
             .1
             .div_ceil(block_size.length_in_pages(pa.page_size()).unwrap() * pa.page_size());
-        writeln!(
-            uart,
-            "mapping RAM {memory_start:?}, {memory_size_in_blocks} {block_size:?}"
-        )
-        .unwrap();
+        trace!("mapping RAM {memory_start:?}, {memory_size_in_blocks} {block_size:?}");
         pt.map(
             memory_start.into(),
             memory_start,
@@ -131,7 +125,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
         )
         .expect("identity map RAM into kernel");
 
-        writeln!(uart, "new kernel page table {pt:?}").unwrap();
+        trace!("new kernel page table {pt:?}");
 
         Mutex::new(pt)
     });
@@ -146,11 +140,9 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     }
 
     for (region_start, region_length) in memory_regions {
-        writeln!(
-            uart,
+        trace!(
             "adding additional memory region to physical page allocator ({region_start:x?}, {region_length:x})",
-        )
-        .unwrap();
+        );
         unsafe {
             assert!(pa.add_memory_region(region_start, region_length));
         }
@@ -159,7 +151,7 @@ pub fn init(dt: &DeviceTree<'_>, uart: &mut impl Write) {
     // initialize kernel heap
     ALLOCATOR.init(pa);
 
-    writeln!(uart, "memory initialized").unwrap();
+    info!("Memory initialized!");
 }
 
 /// Returns a reference to the current global physical page allocator.
