@@ -1,4 +1,5 @@
-use kernel_core::exceptions::{ExceptionSyndromeRegister, Registers};
+use kernel_core::exceptions::{interrupt, ExceptionSyndromeRegister, Registers};
+use spin::once::Once;
 
 // assembly definition of the exception vector table and the low level code that installs the table
 // and the low level handlers that calls into the Rust code.
@@ -25,12 +26,12 @@ unsafe extern "C" fn handle_synchronous_exception(regs: *mut Registers, esr: usi
 }
 
 #[no_mangle]
-unsafe extern "C" fn handle_interrupt(regs: *mut Registers, esr: usize, far: usize) {
-    panic!(
-        "interrupt! {}, FAR={far:x}, registers = {:?}",
-        ExceptionSyndromeRegister(esr as u64),
-        regs.as_ref()
-    );
+unsafe extern "C" fn handle_interrupt(_regs: *mut Registers, _esr: usize, _far: usize) {
+    super::interrupt::HANDLER_POLICY
+        .get()
+        .expect("interrupt handler policy to be initialized before interrupts are enabled")
+        .process_interrupts()
+        .expect("interrupt handlers to complete successfully");
 }
 
 #[no_mangle]

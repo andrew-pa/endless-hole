@@ -1,5 +1,7 @@
 //! Interrupts are exceptions caused by hardware devices.
 
+use log::trace;
+
 /// The identifier of an interrupt.
 pub type Id = u32;
 
@@ -49,17 +51,21 @@ pub trait Controller {
 }
 
 /// Interrupt handler policy.
-pub struct Handler<'ic, IC: Controller> {
-    controller: &'ic IC,
+pub struct Handler<'ic> {
+    controller: &'ic (dyn Controller + Sync),
 }
 
 /// An error that could occur during handling an interrupt.
+#[derive(Debug)]
 pub enum Error {}
 
-impl<IC: Controller> Handler<'_, IC> {
-    /// Handle an interrupt that has occurred.
-    pub fn handle_interrupt(&self, registers: &mut super::Registers) -> Result<(), Error> {
+impl Handler<'_> {
+    /// Acknowledge any interrupts that have occurred, and handle the ones that are known.
+    pub fn process_interrupts(&self) -> Result<(), Error> {
         while let Some(int_id) = self.controller.ack_interrupt() {
+            trace!("handling interrupt {int_id}");
+            // do something useful
+            trace!("finished interrupt {int_id}");
             self.controller.finish_interrupt(int_id);
         }
 

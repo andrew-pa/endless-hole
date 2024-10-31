@@ -80,6 +80,7 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     }
 
     memory::init(&device_tree);
+    exception::init_interrupts(&device_tree);
 
     info!("Boot succesful!");
 
