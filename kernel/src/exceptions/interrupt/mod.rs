@@ -1,6 +1,9 @@
+//! Interrupts from hardware devices.
 use kernel_core::{exceptions::interrupt::*, platform::device_tree::DeviceTree};
 use log::info;
 use spin::once::Once;
+
+pub mod controller;
 
 /// The global interrupt handler policy.
 pub static HANDLER_POLICY: Once<Handler<'static>> = Once::new();

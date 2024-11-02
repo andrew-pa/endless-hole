@@ -10,7 +10,7 @@ extern crate alloc;
 
 core::arch::global_asm!(core::include_str!("./start.S"));
 
-mod exception;
+mod exceptions;
 mod memory;
 mod running_image;
 mod uart;
@@ -40,7 +40,7 @@ static LOGGER: Once<Logger<uart::PL011>> = Once::new();
 pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     unsafe {
         running_image::zero_bss_section();
-        exception::install_exception_vector();
+        exceptions::install_exception_vector();
     }
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
@@ -80,7 +80,7 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     }
 
     memory::init(&device_tree);
-    exception::init_interrupts(&device_tree);
+    exceptions::init_interrupts(&device_tree);
 
     info!("Boot succesful!");
 

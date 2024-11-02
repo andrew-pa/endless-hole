@@ -37,8 +37,6 @@ pub trait Controller {
     /// Disable an interrupt from raising an exception.
     fn disable(&self, id: Id);
 
-    /// Check to see if this interrupt is pending.
-    fn is_pending(&self, id: Id) -> bool;
     /// Clear the pending state for this interrupt.
     fn clear_pending(&self, id: Id);
 
