@@ -9,7 +9,7 @@ use core::ptr::addr_of_mut;
 use itertools::Itertools as _;
 use kernel_core::{
     memory::{
-        page_table::{MapBlockSize, MemoryProperties},
+        page_table::{MapBlockSize, MemoryKind, MemoryProperties},
         BuddyPageAllocator, HeapAllocator, PageAllocator, PageSize, PageTables, PhysicalAddress,
     },
     platform::device_tree::DeviceTree,
@@ -108,9 +108,8 @@ pub fn init(dt: &DeviceTree<'_>) {
         let mut pt =
             PageTables::from_existing(pa, PhysicalAddress::from(root_table_address.cast()), true);
         let block_size = MapBlockSize::largest_supported_block_size(pa.page_size());
-        let memory_size_in_blocks = memory_range
-            .1
-            .div_ceil(block_size.length_in_pages(pa.page_size()).unwrap() * pa.page_size());
+        let block_size_in_bytes = block_size.length_in_bytes(pa.page_size()).unwrap();
+        let memory_size_in_blocks = memory_range.1.div_ceil(block_size_in_bytes);
         trace!("mapping RAM {memory_start:?}, {memory_size_in_blocks} {block_size:?}");
         pt.map(
             memory_start.into(),
@@ -124,6 +123,20 @@ pub fn init(dt: &DeviceTree<'_>) {
             },
         )
         .expect("identity map RAM into kernel");
+
+        trace!("mapping low addresses as MMIO");
+        pt.map(
+            0xffff_0000_0000_0000.into(),
+            0.into(),
+            usize::from(memory_start) / block_size_in_bytes,
+            block_size,
+            &MemoryProperties {
+                writable: true,
+                kind: MemoryKind::Device,
+                ..MemoryProperties::default()
+            },
+        )
+        .expect("identity map low address as MMIO");
 
         trace!("new kernel page table {pt:?}");
 

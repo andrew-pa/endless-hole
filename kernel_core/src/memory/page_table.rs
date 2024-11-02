@@ -170,6 +170,13 @@ impl MapBlockSize {
             MapBlockSize::LargeBlock => None,
         }
     }
+
+    /// Returns the length in bytes of this block size.
+    /// Returns None if the block size is not supported in the current page size.
+    #[must_use]
+    pub fn length_in_bytes(&self, page_size: PageSize) -> Option<usize> {
+        self.length_in_pages(page_size).map(|s| s * page_size)
+    }
 }
 
 /// Errors that could arise in page table operations.
