@@ -29,6 +29,12 @@ pub struct Config {
 /// An interrupt controller manages and collates interrupts for the processor.
 /// This is the generic interface for the interrupt conroller mechanism.
 pub trait Controller {
+    /// Called once at startup to perform global initialization.
+    fn global_initialize(&self);
+
+    /// Called once per core to initialize any per-core state.
+    fn initialize_for_core(&self);
+
     /// Set the configuration of an interrupt.
     fn configure(&self, id: Id, config: &Config);
 
@@ -57,7 +63,14 @@ pub struct Handler<'ic> {
 #[derive(Debug)]
 pub enum Error {}
 
-impl Handler<'_> {
+impl<'ic> Handler<'ic> {
+    /// Create a new interrupt handler policy.
+    pub fn new(controller: &'ic (dyn Controller + Sync)) -> Self {
+        controller.global_initialize();
+        controller.initialize_for_core();
+        Self { controller }
+    }
+
     /// Acknowledge any interrupts that have occurred, and handle the ones that are known.
     ///
     /// # Errors
