@@ -13,6 +13,7 @@ use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
 use itertools::Itertools;
+use snafu::Snafu;
 
 pub mod fdt;
 pub mod iter;
@@ -94,7 +95,7 @@ impl core::fmt::Debug for Registers<'_> {
 }
 
 /// A property value in a device tree.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value<'dt> {
     /// A 32-bit integer.
     U32(u32),
@@ -435,15 +436,40 @@ impl DeviceTree<'_> {
     pub fn iter_reserved_memory_regions(&self) -> iter::MemRegionIter {
         iter::MemRegionIter::for_data(self.mem_map)
     }
+}
 
-    // Write the device tree to the system log at DEBUG level.
-    // pub fn log(&self) {
-    //     log::debug!("Device tree:");
-    //     for item in self.iter_structure() {
-    //         log::debug!("{item:x?}");
-    //     }
-    //     log::debug!("-----------");
-    // }
+/// Errors that might arise while processing ("parsing") a node in the device tree.
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
+pub enum ParseError<'dt> {
+    /// The property was not found in the node.
+    #[snafu(display("Property \"{name}\" not found"))]
+    PropertyNotFound {
+        /// The name of the desired property.
+        name: &'static str,
+    },
+
+    /// A property was found to have an unexpected type.
+    #[snafu(display("Expected value of type {expected_type} for property \"{}\", got: {value:?}", core::str::from_utf8(name).unwrap_or("<property name is invalid UTF-8>")))]
+    UnexpectedType {
+        /// The name of the property.
+        name: &'dt [u8],
+        /// The actual value of the property.
+        value: Value<'dt>,
+        /// A description of the type of value expected to be associated with this property.
+        expected_type: &'static str,
+    },
+
+    /// A property was found to have an unexpected value.
+    #[snafu(display("Unexpected value for property \"{}\", got: {value:?} ({reason})", core::str::from_utf8(name).unwrap_or("<property name is invalid UTF-8>")))]
+    UnexpectedValue {
+        /// The name of the property.
+        name: &'dt [u8],
+        /// The actual value of the property.
+        value: Value<'dt>,
+        /// A description further explaining why the value was unexpected.
+        reason: &'static str,
+    },
 }
 
 #[cfg(test)]

@@ -65,6 +65,12 @@ impl<T> PhysicalPointer<T> {
         PhysicalPointer(self.0, PhantomData)
     }
 
+    /// A null physical pointer (address 0).
+    #[must_use]
+    pub const fn null() -> Self {
+        Self(0, PhantomData)
+    }
+
     /// Check to see if this pointer is null.
     #[inline]
     #[must_use]
@@ -195,6 +201,12 @@ macro_rules! virtual_pointer_impl {
             #[must_use]
             pub const fn is_aligned_to(self, alignment: usize) -> bool {
                 self.0 % alignment == 0
+            }
+
+            /// A null virtual pointer.
+            #[must_use]
+            pub const fn null() -> Self {
+                Self(0, PhantomData)
             }
         }
 
