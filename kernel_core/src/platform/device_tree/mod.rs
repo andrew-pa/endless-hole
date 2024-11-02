@@ -469,7 +469,7 @@ mod tests {
             Some(Value::StringList(ss)) => {
                 assert!(ss.contains(b"linux,dummy-virt"));
             }
-            c => panic!("unexpected value for /compatible: {:?}", c),
+            c => panic!("unexpected value for /compatible: {c:?}"),
         }
     }
 
@@ -480,7 +480,7 @@ mod tests {
             Some(Value::StringList(ss)) => {
                 assert!(ss.contains(b"arm,armv7-timer"));
             }
-            c => panic!("unexpected value for /compatible: {:?}", c),
+            c => panic!("unexpected value for /compatible: {c:?}"),
         }
     }
 
@@ -491,10 +491,7 @@ mod tests {
             Some(Value::Phandle(v)) => {
                 assert_eq!(v, 0x8003);
             }
-            c => panic!(
-                "unexpected value for /intc@8000000/v2m@8020000/phandle: {:?}",
-                c
-            ),
+            c => panic!("unexpected value for /intc@8000000/v2m@8020000/phandle: {c:?}"),
         }
     }
 
@@ -537,7 +534,7 @@ mod tests {
                 assert_eq!(i.next(), Some((0x0801_0000, 0x1_0000)));
                 assert_eq!(i.next(), None);
             }
-            c => panic!("unexpected value for /intc@8000000/reg: {:?}", c),
+            c => panic!("unexpected value for /intc@8000000/reg: {c:?}"),
         }
     }
 
@@ -552,7 +549,7 @@ mod tests {
                 assert_eq!(i.next(), Some((0, 0)));
                 assert_eq!(i.next(), None);
             }
-            c => panic!("unexpected value for /cpus/cpu@0/reg: {:?}", c),
+            c => panic!("unexpected value for /cpus/cpu@0/reg: {c:?}"),
         }
     }
 

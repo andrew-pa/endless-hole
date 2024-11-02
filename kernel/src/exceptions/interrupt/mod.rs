@@ -1,5 +1,5 @@
 //! Interrupts from hardware devices.
-use kernel_core::{exceptions::interrupt::*, platform::device_tree::DeviceTree};
+use kernel_core::{exceptions::interrupt::Handler, platform::device_tree::DeviceTree};
 use log::info;
 use spin::once::Once;
 

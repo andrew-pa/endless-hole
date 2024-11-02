@@ -1,6 +1,6 @@
 //! Driver for ARM Generic Interrupt Controller.
 
-use kernel_core::exceptions::interrupt::*;
+use kernel_core::exceptions::interrupt::{Config, Controller, Id};
 use log::{debug, trace};
 use spin::Mutex;
 

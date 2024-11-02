@@ -449,7 +449,7 @@ mod tests {
                     for msg_id in 0..messages_per_thread {
                         logger.log(
                             &Record::builder()
-                                .args(format_args!("Thread {} Message {}", thread_id, msg_id))
+                                .args(format_args!("Thread {thread_id} Message {msg_id}"))
                                 .level(Level::Info)
                                 .target("test")
                                 .build(),
@@ -491,7 +491,7 @@ mod tests {
 
         logger.log(
             &Record::builder()
-                .args(format_args!("{}", large_message))
+                .args(format_args!("{large_message}"))
                 .level(Level::Info)
                 .target("test")
                 .build(),
@@ -556,7 +556,7 @@ mod tests {
                 for i in 0..flush_count {
                     logger2.log(
                         &Record::builder()
-                            .args(format_args!("Message {}", i))
+                            .args(format_args!("Message {i}"))
                             .level(Level::Info)
                             .target("test")
                             .build(),
@@ -588,7 +588,7 @@ mod tests {
         for i in 0..8 {
             logger.log(
                 &Record::builder()
-                    .args(format_args!("Wrap message {}", i))
+                    .args(format_args!("Wrap message {i}"))
                     .level(Level::Info)
                     .target("test")
                     .build(),
@@ -616,7 +616,7 @@ mod tests {
         ] {
             logger.log(
                 &Record::builder()
-                    .args(format_args!("{} message", level))
+                    .args(format_args!("{level} message"))
                     .level(*level)
                     .target("test")
                     .build(),

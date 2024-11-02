@@ -59,6 +59,9 @@ pub enum Error {}
 
 impl Handler<'_> {
     /// Acknowledge any interrupts that have occurred, and handle the ones that are known.
+    ///
+    /// # Errors
+    ///
     pub fn process_interrupts(&self) -> Result<(), Error> {
         while let Some(int_id) = self.controller.ack_interrupt() {
             trace!("handling interrupt {int_id}");

@@ -801,7 +801,7 @@ mod tests {
     }
 
     fn cleanup_allocator(_cx: (), allocator: MockPageAllocator) {
-        allocator.end_check()
+        allocator.end_check();
     }
 
     test_page_allocator!(MockPageAllocator, setup_allocator, cleanup_allocator);
