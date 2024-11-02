@@ -60,6 +60,7 @@ impl GenericV2 {
                                 reason: "incompatible"
                             }
                         );
+                        trace!("GICv2 compatiable device: {strings:?}");
                     }
                     _ => {
                         return Err(ParseError::UnexpectedType {

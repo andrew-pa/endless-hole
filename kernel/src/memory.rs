@@ -31,6 +31,9 @@ static PAGE_ALLOCATOR: Once<ChosenPageAllocator> = Once::new();
 /// The Rust global heap allocator.
 static ALLOCATOR: HeapAllocator<'static, ChosenPageAllocator> = HeapAllocator::new_uninit();
 
+/// The kernel's own page tables.
+///
+/// Map addresses in TTBR1, matching `0xffff_????_????_????`.
 static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static, ChosenPageAllocator>>> = Once::new();
 
 /// Flush the TLB for everything in EL1.
@@ -59,6 +62,7 @@ pub unsafe fn write_mair(value: u64) {
 
 /// Initialize the memory subsystem.
 pub fn init(dt: &DeviceTree<'_>) {
+    trace!("Initializing memory…");
     // create page allocator
     let page_size = PageSize::FourKiB;
     let memory_node = dt
