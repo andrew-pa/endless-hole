@@ -137,7 +137,124 @@ impl<'dt> Value<'dt> {
         }
     }
 
-    /// If the value is of type `u32`, extract the value as a Rust `u32`.
+    /// Try to extract the value as a Rust `u32` if it is of type `u32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `u32`.
+    pub fn try_into_u32(self) -> Result<u32, ParseError<'dt>> {
+        if let Self::U32(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"u32",
+                value: self,
+                expected_type: "u32",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust `u64` if it is of type `u64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `u64`.
+    pub fn try_into_u64(self) -> Result<u64, ParseError<'dt>> {
+        if let Self::U64(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"u64",
+                value: self,
+                expected_type: "u64",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust `u32` if it is of type `phandle`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `phandle`.
+    pub fn try_into_phandle(self) -> Result<u32, ParseError<'dt>> {
+        if let Self::Phandle(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"phandle",
+                value: self,
+                expected_type: "phandle",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust [`CStr`] if it is of type `string`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `string`.
+    pub fn try_into_string(self) -> Result<&'dt CStr, ParseError<'dt>> {
+        if let Self::String(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"string",
+                value: self,
+                expected_type: "string",
+            })
+        }
+    }
+
+    /// Try to extract the value as [`StringList`] if it is of type `stringlist`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `stringlist`.
+    pub fn try_into_strings(self) -> Result<StringList<'dt>, ParseError<'dt>> {
+        if let Self::StringList(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"stringlist",
+                value: self,
+                expected_type: "stringlist",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust `&[u8]` if it is unparsed, returning the raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `bytes`.
+    pub fn try_into_bytes(self) -> Result<&'dt [u8], ParseError<'dt>> {
+        if let Self::Bytes(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"bytes",
+                value: self,
+                expected_type: "bytes",
+            })
+        }
+    }
+
+    /// Try to extract the value as [`Registers`] if it is of type `reg`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `reg`.
+    pub fn try_into_reg(self) -> Result<Registers<'dt>, ParseError<'dt>> {
+        if let Self::Reg(v) = self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name: b"reg",
+                value: self,
+                expected_type: "reg",
+            })
+        }
+    }
     #[must_use]
     pub fn into_u32(self) -> Option<u32> {
         if let Self::U32(v) = self {
