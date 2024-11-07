@@ -13,6 +13,7 @@ core::arch::global_asm!(core::include_str!("./start.S"));
 mod exceptions;
 mod memory;
 mod running_image;
+mod timer;
 mod uart;
 
 use core::fmt::Write;

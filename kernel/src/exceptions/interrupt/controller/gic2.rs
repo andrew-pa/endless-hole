@@ -1,7 +1,12 @@
 //! Driver for ARM Generic Interrupt Controller version 2.
+//!
+//! # Reference Documentation
+//! - GICv2 specification: <https://developer.arm.com/documentation/ihi0048>
+//! - Device tree node: [Linux Kernel Documentation](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/Documentation/devicetree/bindings/interrupt-controller/arm,gic.yaml)
 
+use byteorder::{BigEndian, ByteOrder};
 use kernel_core::{
-    exceptions::interrupt::{Config, Controller, Id},
+    exceptions::interrupt::{Config, Controller, Id, TriggerMode},
     memory::PhysicalAddress,
     platform::device_tree::{
         iter::NodePropertyIter, ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu, Value,
@@ -21,8 +26,7 @@ pub struct GenericV2 {
 unsafe impl Send for GenericV2 {}
 unsafe impl Sync for GenericV2 {}
 
-/// A list of device tree `compatible` strings (see section 2.3.1 of the spec) that this driver is
-/// compatible with.
+/// A list of device tree `compatible` strings (see section 2.3.1 of the spec) that this driver is compatible with.
 const COMPATIBLE: &[&[u8]] = &[
     b"arm,arm11mp-gic" as &[u8],
     b"arm,cortex-a15-gic",
@@ -60,13 +64,32 @@ impl GenericV2 {
                                 reason: "incompatible"
                             }
                         );
-                        trace!("GICv2 compatiable device: {strings:?}");
+                        debug!("GICv2 compatible device: {strings:?}");
                     }
                     _ => {
                         return Err(ParseError::UnexpectedType {
                             name,
                             value,
                             expected_type: "StringList",
+                        })
+                    }
+                },
+                b"#interrupt-cells" => match &value {
+                    Value::U32(n) => {
+                        ensure!(
+                            *n == 3,
+                            UnexpectedValueSnafu {
+                                name,
+                                value,
+                                reason: "driver supports GICv2 with #interrupt-cells=3 only"
+                            }
+                        );
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedType {
+                            name,
+                            value,
+                            expected_type: "u32",
                         })
                     }
                 },
@@ -184,6 +207,39 @@ impl Controller for GenericV2 {
         }
     }
 
+    fn interrupt_in_device_tree(&self, data: &[u8], index: usize) -> Option<(Id, TriggerMode)> {
+        if (index + 1) * 12 > data.len() {
+            return None;
+        }
+
+        let d = &data[index * 12..(index + 1) * 12];
+        let first_cell = BigEndian::read_u32(&d[0..4]);
+        let second_cell = BigEndian::read_u32(&d[4..8]);
+        let third_cell = BigEndian::read_u32(&d[8..12]);
+
+        let id = match first_cell {
+            0 => {
+                // SPI interrupt
+                // defined in device tree as 0-987, mapped to interrupt ids 32-1019
+                32 + second_cell
+            }
+            1 => {
+                // PPI interrupt
+                // defined in device tree as 0-15, mapped to interrupt ids 16-31
+                16 + second_cell
+            }
+            _ => return None,
+        };
+
+        let trigger_mode = match third_cell & 0xf {
+            0b0001 | 0b0010 => TriggerMode::Edge,
+            0b0100 | 0b1000 => TriggerMode::Level,
+            _ => return None,
+        };
+
+        Some((id, trigger_mode))
+    }
+
     fn configure(&self, id: Id, config: &Config) {
         debug!("configuring interrupt {id} {config:?}");
         let distributor_base = self.distributor_base.lock();
@@ -211,18 +267,18 @@ impl Controller for GenericV2 {
         }
     }
 
-    fn clear_pending(&self, id: Id) {
-        let distributor_base = self.distributor_base.lock();
-        unsafe {
-            write_bit_for_id(*distributor_base, dist_regs::ICPENDR_N, id);
-        }
-    }
-
     fn disable(&self, id: Id) {
         debug!("disable interrupt {id}");
         let distributor_base = self.distributor_base.lock();
         unsafe {
             write_bit_for_id(*distributor_base, dist_regs::ICENABLER_N, id);
+        }
+    }
+
+    fn clear_pending(&self, id: Id) {
+        let distributor_base = self.distributor_base.lock();
+        unsafe {
+            write_bit_for_id(*distributor_base, dist_regs::ICPENDR_N, id);
         }
     }
 

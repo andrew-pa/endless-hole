@@ -255,6 +255,8 @@ impl<'dt> Value<'dt> {
             })
         }
     }
+
+    /// If the value is of type `u32`, extract the value as a Rust `u32`.
     #[must_use]
     pub fn into_u32(self) -> Option<u32> {
         if let Self::U32(v) = self {

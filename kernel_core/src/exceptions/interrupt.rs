@@ -35,6 +35,10 @@ pub trait Controller {
     /// Called once per core to initialize any per-core state.
     fn initialize_for_core(&self);
 
+    /// Interpret the contents of an `interrupts` property in a device tree node for this interrupt
+    /// controller. The `index` selects which interrupt in the list to return.
+    fn interrupt_in_device_tree(&self, data: &[u8], index: usize) -> Option<(Id, TriggerMode)>;
+
     /// Set the configuration of an interrupt.
     fn configure(&self, id: Id, config: &Config);
 
