@@ -56,3 +56,11 @@ pub fn init(device_tree: &DeviceTree<'_>) {
 
     info!("Interrupts initialized!");
 }
+
+/// Wait for an interrupt to occur, pausing execution.
+#[inline]
+pub fn wait_for_interrupt() {
+    unsafe {
+        core::arch::asm!("wfi");
+    }
+}

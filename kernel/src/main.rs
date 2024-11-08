@@ -113,8 +113,9 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         exceptions::CpuExceptionMask::all_enabled().write();
     }
 
-    #[allow(clippy::empty_loop)]
-    loop {}
+    loop {
+        exceptions::wait_for_interrupt();
+    }
 }
 
 /// The main entry point for secondary cores in an SMP system.
@@ -122,8 +123,9 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
 #[no_mangle]
 pub extern "C" fn secondary_core_kmain() -> ! {
-    #[allow(clippy::empty_loop)]
-    loop {}
+    loop {
+        exceptions::wait_for_interrupt();
+    }
 }
 
 /// The kernel-wide panic handler.
