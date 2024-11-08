@@ -24,6 +24,7 @@ pub trait GlobalValueReader: Send + Sync {
 }
 
 /// Struct to hold global values.
+#[derive(Default)]
 pub struct GlobalValues {
     /// The ID of the current CPU core.
     pub core_id: usize,
@@ -186,11 +187,11 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize>
         // Write formatted data directly into the ring buffer.
         writeln!(
             &mut writer,
-            "\x1b[{}m{:<5} \x1b[90mT{} C{}\x1b[0m {}@{}| {}",
+            "\x1b[{}m{:<5} \x1b[90mT{} C{:x}\x1b[0m {}@{}| {}",
             color_for_level(record.level()),
             record.level(),
-            global_values.core_id,
             global_values.timer_counter,
+            global_values.core_id,
             module_path,
             line,
             record.args()
@@ -390,8 +391,13 @@ mod tests {
             }
         }
     }
+
+    #[test]
     fn test_basic_logging() {
-        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(TestSink::default(), LevelFilter::Info);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(
+            TestSink::default(),
+            LevelFilter::Info,
+        );
 
         let record = Record::builder()
             .args(format_args!("test message"))
@@ -412,7 +418,10 @@ mod tests {
 
     #[test]
     fn test_log_level_filtering() {
-        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(TestSink::default(), LevelFilter::Warn);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(
+            TestSink::default(),
+            LevelFilter::Warn,
+        );
 
         // This should be logged
         let warn_record = Record::builder()
@@ -440,7 +449,10 @@ mod tests {
     #[test]
     fn test_buffer_overflow() {
         // Use a very small buffer to test overflow
-        let logger = Logger::<TestSink, TestGlobalValueReader, 2>::new(TestSink::default(), LevelFilter::Info);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 2>::new(
+            TestSink::default(),
+            LevelFilter::Info,
+        );
 
         // lock the sink to prevent a flush
         let sink = logger.sink.lock();
@@ -521,7 +533,10 @@ mod tests {
 
     #[test]
     fn test_large_message_chunking() {
-        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(TestSink::default(), LevelFilter::Info);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(
+            TestSink::default(),
+            LevelFilter::Info,
+        );
 
         // Create a message larger than MAX_LOG_CHUNK_SIZE
         let large_message = "A".repeat(MAX_LOG_CHUNK_SIZE * 2);
@@ -551,7 +566,10 @@ mod tests {
 
     #[test]
     fn test_empty_message() {
-        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(TestSink::default(), LevelFilter::Info);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(
+            TestSink::default(),
+            LevelFilter::Info,
+        );
 
         let record = Record::builder()
             .args(format_args!(""))
@@ -616,7 +634,10 @@ mod tests {
 
     #[test]
     fn test_wrapped_indices() {
-        let logger = Logger::<TestSink, TestGlobalValueReader, 4>::new(TestSink::default(), LevelFilter::Info);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 4>::new(
+            TestSink::default(),
+            LevelFilter::Info,
+        );
 
         // Force the write_index to wrap around
         logger.write_index.store(usize::MAX - 2, Ordering::SeqCst);
@@ -642,7 +663,10 @@ mod tests {
 
     #[test]
     fn test_all_log_levels() {
-        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(TestSink::default(), LevelFilter::Trace);
+        let logger = Logger::<TestSink, TestGlobalValueReader, 16>::new(
+            TestSink::default(),
+            LevelFilter::Trace,
+        );
 
         for level in &[
             Level::Error,

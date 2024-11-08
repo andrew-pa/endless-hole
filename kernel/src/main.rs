@@ -19,14 +19,33 @@ mod uart;
 use core::fmt::Write;
 
 use kernel_core::{
-    logger::Logger,
+    logger::{GlobalValueReader, Logger},
     memory::PhysicalPointer,
     platform::device_tree::{DeviceTree, Value as DTValue},
 };
 use log::{debug, info};
 use spin::once::Once;
 
-static LOGGER: Once<Logger<uart::PL011>> = Once::new();
+struct SystemGlobalValueReader;
+
+impl GlobalValueReader for SystemGlobalValueReader {
+    fn read() -> kernel_core::logger::GlobalValues {
+        let mut r = kernel_core::logger::GlobalValues::default();
+        unsafe {
+            core::arch::asm!(
+                "mrs {counter}, CNTPCT_EL0",
+                "mrs {core_id}, MPIDR_EL1",
+                counter = out(reg) r.timer_counter,
+                core_id = out(reg) r.core_id
+            );
+        }
+        // clear multiprocessor flag bit in MPIDR register
+        r.core_id &= !0x8000_0000;
+        r
+    }
+}
+
+static LOGGER: Once<Logger<uart::PL011, SystemGlobalValueReader>> = Once::new();
 
 fn init_logging(device_tree: &DeviceTree) {
     let stdout_device_path = device_tree
