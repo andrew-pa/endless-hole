@@ -21,6 +21,7 @@ bitfield! {
     frq, set_frq: 6;
 }
 
+#[allow(unused)]
 impl CpuExceptionMask {
     /// A mask to enable all exceptions.
     pub fn all_enabled() -> CpuExceptionMask {

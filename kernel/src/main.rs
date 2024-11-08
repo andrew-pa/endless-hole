@@ -36,7 +36,7 @@ fn init_logging(device_tree: &DeviceTree) {
         // TODO: default to QEMU virt board UART for now, should be platform default
         .map_or(b"/pl011@9000000" as &[u8], |p| &p[0..p.len() - 1]);
 
-    let uart = uart::PL011::from_device_tree(&device_tree, stdout_device_path).expect("init UART");
+    let uart = uart::PL011::from_device_tree(device_tree, stdout_device_path).expect("init UART");
 
     log::set_max_level(log::LevelFilter::max());
     log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();

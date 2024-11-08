@@ -1,7 +1,7 @@
 //! Driver for ARM Generic Interrupt Controller version 2.
 //!
 //! # Reference Documentation
-//! - GICv2 specification: <https://developer.arm.com/documentation/ihi0048>
+//! - `GICv2` specification: <https://developer.arm.com/documentation/ihi0048>
 //! - Device tree node: [Linux Kernel Documentation](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/Documentation/devicetree/bindings/interrupt-controller/arm,gic.yaml)
 
 use byteorder::{BigEndian, ByteOrder};
@@ -9,7 +9,7 @@ use kernel_core::{
     exceptions::interrupt::{Config, Controller, Id, TriggerMode},
     memory::PhysicalAddress,
     platform::device_tree::{
-        iter::NodePropertyIter, ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu, Value,
+        iter::NodePropertyIter, ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu,
     },
 };
 use log::{debug, trace};
@@ -50,78 +50,52 @@ impl GenericV2 {
 
         for (name, value) in node {
             match name {
-                b"compatible" => match &value {
-                    Value::StringList(strings) => {
-                        // make sure that the driver is compatible with the device
-                        ensure!(
-                            strings.iter().any(|model_name| COMPATIBLE
-                                .iter()
-                                .any(|supported_model_name| model_name.to_bytes()
-                                    == *supported_model_name)),
-                            UnexpectedValueSnafu {
-                                name,
-                                value,
-                                reason: "incompatible"
-                            }
-                        );
-                        debug!("GICv2 compatible device: {strings:?}");
-                    }
-                    _ => {
-                        return Err(ParseError::UnexpectedType {
+                b"compatible" => {
+                    let strings = value.as_strings(name)?;
+                    // make sure that the driver is compatible with the device
+                    ensure!(
+                        strings.iter().any(|model_name| COMPATIBLE
+                            .iter()
+                            .any(|supported_model_name| model_name.to_bytes()
+                                == *supported_model_name)),
+                        UnexpectedValueSnafu {
                             name,
                             value,
-                            expected_type: "StringList",
-                        })
-                    }
-                },
-                b"#interrupt-cells" => match &value {
-                    Value::Bytes(n) => {
-                        ensure!(
-                            n.len() == 4 && n[3] == 3,
-                            UnexpectedValueSnafu {
-                                name,
-                                value,
-                                reason: "driver supports GICv2 with #interrupt-cells=3 only"
-                            }
-                        );
-                    }
-                    _ => {
-                        return Err(ParseError::UnexpectedType {
+                            reason: "incompatible"
+                        }
+                    );
+                    debug!("GICv2 compatible device: {strings:?}");
+                }
+                b"#interrupt-cells" => {
+                    let n = value.as_bytes(name)?;
+                    ensure!(
+                        n.len() == 4 && n[3] == 3,
+                        UnexpectedValueSnafu {
                             name,
                             value,
-                            expected_type: "u32",
-                        })
-                    }
-                },
+                            reason: "driver supports GICv2 with #interrupt-cells=3 only"
+                        }
+                    );
+                }
                 b"interrupt-controller" => {
                     found_marker_property = true;
                 }
-                b"reg" => match &value {
-                    Value::Reg(registers) => {
-                        let mut regs = registers.iter();
-                        let (dist_base_raw, _) =
-                            regs.next().with_context(|| UnexpectedValueSnafu {
-                                name,
-                                value: value.clone(),
-                                reason: "distributor register region to be present",
-                            })?;
-                        dist_base = dist_base_raw.into();
-                        let (cpu_base_raw, _) =
-                            regs.next().with_context(|| UnexpectedValueSnafu {
-                                name,
-                                value: value.clone(),
-                                reason: "cpuributor register region to be present",
-                            })?;
-                        cpu_base = cpu_base_raw.into();
-                    }
-                    _ => {
-                        return Err(ParseError::UnexpectedType {
-                            name,
-                            value,
-                            expected_type: "StringList",
-                        })
-                    }
-                },
+                b"reg" => {
+                    let registers = value.as_reg(name)?;
+                    let mut regs = registers.iter();
+                    let (dist_base_raw, _) = regs.next().with_context(|| UnexpectedValueSnafu {
+                        name,
+                        value: value.clone(),
+                        reason: "distributor register region to be present",
+                    })?;
+                    dist_base = dist_base_raw.into();
+                    let (cpu_base_raw, _) = regs.next().with_context(|| UnexpectedValueSnafu {
+                        name,
+                        value: value.clone(),
+                        reason: "cpu register region to be present",
+                    })?;
+                    cpu_base = cpu_base_raw.into();
+                }
                 _ => {}
             }
         }

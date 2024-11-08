@@ -73,7 +73,10 @@ pub struct Handler<'ic, 't, T: SystemTimer> {
 
 /// An error that could occur during handling an interrupt.
 #[derive(Debug)]
-pub enum Error {}
+pub enum Error {
+    /// An interrupt occurred that was unexpected.
+    UnknownInterrupt(Id),
+}
 
 impl<'ic, 't, T: SystemTimer> Handler<'ic, 't, T> {
     /// Create a new interrupt handler policy.
@@ -84,7 +87,7 @@ impl<'ic, 't, T: SystemTimer> Handler<'ic, 't, T> {
     /// Acknowledge any interrupts that have occurred, and handle the ones that are known.
     ///
     /// # Errors
-    ///
+    /// - [`Error::UnknownInterrupt`]: If an interrupt happens that is unknown to the handler.
     pub fn process_interrupts(&self) -> Result<(), Error> {
         while let Some(int_id) = self.controller.ack_interrupt() {
             trace!("handling interrupt {int_id}");
@@ -94,7 +97,7 @@ impl<'ic, 't, T: SystemTimer> Handler<'ic, 't, T> {
                 // TODO: run scheduler here
                 self.timer.reset();
             } else {
-                panic!("unknown interrupt {int_id}");
+                return Err(Error::UnknownInterrupt(int_id));
             }
 
             trace!("finished interrupt {int_id}");

@@ -52,7 +52,7 @@ pub fn init(device_tree: &DeviceTree<'_>) {
 
     HANDLER_POLICY.call_once(|| Handler::new(controller.as_ref(), timer));
 
-    timer.start();
+    Timer::start_for_core();
 
     info!("Interrupts initialized!");
 }

@@ -142,13 +142,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `u32`.
-    pub fn try_into_u32(self) -> Result<u32, ParseError<'dt>> {
-        if let Self::U32(v) = self {
+    pub fn as_u32(&self, name: &'dt [u8]) -> Result<&u32, ParseError<'dt>> {
+        if let Self::U32(ref v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"u32",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "u32",
             })
         }
@@ -159,13 +159,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `u64`.
-    pub fn try_into_u64(self) -> Result<u64, ParseError<'dt>> {
-        if let Self::U64(v) = self {
+    pub fn as_u64(&self, name: &'dt [u8]) -> Result<&u64, ParseError<'dt>> {
+        if let Self::U64(ref v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"u64",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "u64",
             })
         }
@@ -176,13 +176,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `phandle`.
-    pub fn try_into_phandle(self) -> Result<u32, ParseError<'dt>> {
-        if let Self::Phandle(v) = self {
+    pub fn as_phandle(&self, name: &'dt [u8]) -> Result<&u32, ParseError<'dt>> {
+        if let Self::Phandle(ref v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"phandle",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "phandle",
             })
         }
@@ -193,13 +193,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `string`.
-    pub fn try_into_string(self) -> Result<&'dt CStr, ParseError<'dt>> {
-        if let Self::String(v) = self {
+    pub fn as_string(&self, name: &'dt [u8]) -> Result<&'dt CStr, ParseError<'dt>> {
+        if let Self::String(v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"string",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "string",
             })
         }
@@ -210,13 +210,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `stringlist`.
-    pub fn try_into_strings(self) -> Result<StringList<'dt>, ParseError<'dt>> {
-        if let Self::StringList(v) = self {
+    pub fn as_strings(&self, name: &'dt [u8]) -> Result<&StringList<'dt>, ParseError<'dt>> {
+        if let Self::StringList(ref v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"stringlist",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "stringlist",
             })
         }
@@ -227,13 +227,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `bytes`.
-    pub fn try_into_bytes(self) -> Result<&'dt [u8], ParseError<'dt>> {
-        if let Self::Bytes(v) = self {
+    pub fn as_bytes(&self, name: &'dt [u8]) -> Result<&'dt [u8], ParseError<'dt>> {
+        if let Self::Bytes(v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"bytes",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "bytes",
             })
         }
@@ -244,13 +244,13 @@ impl<'dt> Value<'dt> {
     /// # Errors
     ///
     /// Returns a `ParseError::UnexpectedType` if the value is not of type `reg`.
-    pub fn try_into_reg(self) -> Result<Registers<'dt>, ParseError<'dt>> {
-        if let Self::Reg(v) = self {
+    pub fn as_reg(&self, name: &'dt [u8]) -> Result<&Registers<'dt>, ParseError<'dt>> {
+        if let Self::Reg(ref v) = *self {
             Ok(v)
         } else {
             Err(ParseError::UnexpectedType {
-                name: b"reg",
-                value: self,
+                name,
+                value: self.clone(),
                 expected_type: "reg",
             })
         }

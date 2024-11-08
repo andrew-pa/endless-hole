@@ -172,6 +172,7 @@ pub fn init(dt: &DeviceTree<'_>) {
 }
 
 /// Returns a reference to the current global physical page allocator.
+#[allow(unused)]
 pub fn page_allocator() -> &'static impl PageAllocator {
     PAGE_ALLOCATOR.wait()
 }

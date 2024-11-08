@@ -6,8 +6,7 @@ use kernel_core::{
     exceptions::{interrupt, InterruptController, InterruptId},
     platform::{
         device_tree::{
-            iter::{NodeItem, NodePropertyIter},
-            ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu, Value,
+            iter::NodePropertyIter, ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu, Value,
         },
         timer::SystemTimer,
     },
@@ -15,54 +14,22 @@ use kernel_core::{
 use log::{debug, trace};
 use snafu::{ensure, OptionExt};
 
-/// Read the compare value register (`CNTP_CVAL_EL0`).
-pub fn read_compare_value() -> u64 {
-    let mut cv: u64;
-    unsafe {
-        asm!("mrs {cv}, CNTP_CVAL_EL0", cv = out(reg) cv);
-    }
-    cv
-}
-
-/// Write the compare value register (`CNTP_CVAL_EL0`).
-pub fn write_compare_value(compare_value: u64) {
-    unsafe {
-        asm!("msr CNTP_CVAL_EL0, {cv}", cv = in(reg) compare_value);
-    }
-}
-
-/// Read timer value register (`CNTP_TVAL_EL0`).
-pub fn read_timer_value() -> u32 {
-    let mut tv: u64;
-    unsafe {
-        asm!("mrs {tv}, CNTP_TVAL_EL0", tv = out(reg) tv);
-    }
-    tv as u32
-}
-
 /// Write timer value register (`CNTP_TVAL_EL0`).
-pub fn write_timer_value(timer_value: u32) {
-    unsafe {
-        asm!("msr CNTP_TVAL_EL0, {cv:x}", cv = in(reg) timer_value);
-    }
-}
-
-/// Read timer counter register (`CNTPCT_EL0`).
-pub fn counter() -> u64 {
-    let mut cntpct: u64;
-    unsafe {
-        asm!("mrs {val}, CNTPCT_EL0", val = out(reg) cntpct);
-    }
-    cntpct
+///
+/// # Safety
+/// This will change the system register that stores the current timer value.
+/// This may cause the timer interrupt to be triggered if it is enabled, and is globally visible.
+unsafe fn write_timer_value(timer_value: u32) {
+    asm!("msr CNTP_TVAL_EL0, {cv:x}", cv = in(reg) timer_value);
 }
 
 /// Read timer counter frequency register (`CNTFRQ_EL0`).
-pub fn frequency() -> u32 {
-    let mut freq: u64;
+fn frequency() -> u32 {
+    let mut freq: u32;
     unsafe {
-        asm!("mrs {val}, CNTFRQ_EL0", val = out(reg) freq);
+        asm!("mrs {val:x}, CNTFRQ_EL0", val = out(reg) freq);
     }
-    freq as u32
+    freq
 }
 
 bitfield! {
@@ -74,49 +41,24 @@ bitfield! {
     enable, set_enable: 0;
 }
 
-/// Read the timer control register (`CNTP_CTL_EL0`).
-fn read_control() -> TimerControlRegister {
-    let mut ctrl: u64;
-    unsafe {
-        asm!("mrs {ctrl}, CNTP_CTL_EL0", ctrl = out(reg) ctrl);
+impl TimerControlRegister {
+    /// Read the timer control register (`CNTP_CTL_EL0`).
+    fn read() -> TimerControlRegister {
+        let mut ctrl: u64;
+        unsafe {
+            asm!("mrs {ctrl}, CNTP_CTL_EL0", ctrl = out(reg) ctrl);
+        }
+        TimerControlRegister(ctrl)
     }
-    TimerControlRegister(ctrl)
-}
 
-/// Write the timer control register (`CNTP_CTL_EL0`).
-fn write_control(r: TimerControlRegister) {
-    unsafe {
-        asm!("msr CNTP_CTL_EL0, {ctrl}", ctrl = in(reg) r.0);
+    /// Write the timer control register (`CNTP_CTL_EL0`) with this value.
+    ///
+    /// # Safety
+    /// This function will write the system register that controls the timer, which could have
+    /// unintended consequences if the kernel is not ready for timer interrupts.
+    unsafe fn write(&self) {
+        asm!("msr CNTP_CTL_EL0, {ctrl}", ctrl = in(reg) self.0);
     }
-}
-
-/// Check to see if the timer condition has been met.
-pub fn condition_met() -> bool {
-    read_control().istatus()
-}
-
-/// Check to see if the timer interrupt is enabled.
-pub fn interrupts_enabled() -> bool {
-    !read_control().imask()
-}
-
-/// Enable/disable the timer interrupt.
-pub fn set_interrupts_enabled(enabled: bool) {
-    let mut c = read_control();
-    c.set_imask(!enabled);
-    write_control(c);
-}
-
-/// Check if the timer is enabled.
-pub fn enabled() -> bool {
-    read_control().enable()
-}
-
-/// Enable/disable the timer.
-pub fn set_enabled(enabled: bool) {
-    let mut c = read_control();
-    c.set_enable(enabled);
-    write_control(c);
 }
 
 /// A list of device tree `compatible` strings (see section 2.3.1 of the spec) that this driver is compatible with.
@@ -208,10 +150,14 @@ impl Timer {
 
     // NOTE: you've gotta call this for every CPU because the timer itself is per-CPU
     // this is kinda strange, b/c it should really be in the mech trait
-    pub fn start(&self) {
-        set_enabled(true);
-        set_interrupts_enabled(true);
-        write_timer_value(0);
+    pub fn start_for_core() {
+        let mut ctl = TimerControlRegister::read();
+        ctl.set_enable(true);
+        ctl.set_imask(false);
+        unsafe {
+            ctl.write();
+            write_timer_value(0);
+        }
         trace!("system timer started");
     }
 }
@@ -222,6 +168,8 @@ impl SystemTimer for Timer {
     }
 
     fn reset(&self) {
-        write_timer_value(self.reset_value);
+        unsafe {
+            write_timer_value(self.reset_value);
+        }
     }
 }
