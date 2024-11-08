@@ -26,6 +26,7 @@ pub trait GlobalValueReader {
 pub struct GlobalValues {
     pub core_id: usize,
     pub timer_counter: u64,
+}
 
 /// Trait representing a sink that accepts log chunks.
 pub trait LogSink {
@@ -191,15 +192,6 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger
         )
         .unwrap();
     }
-        Self {
-            buffer: [const { LogChunk::new() }; NUM_CHUNKS_IN_BUFFER],
-            write_index: AtomicUsize::new(0),
-            read_index: AtomicUsize::new(0),
-            overflow_count: AtomicUsize::new(0),
-            sink: Mutex::new(sink),
-            level_filter,
-        }
-    }
 
     /// Flush up to `limit` log chunks to the sink, given that we could acquire it.
     fn flush_internal(&self, sink: &mut S, limit: usize) {
@@ -257,7 +249,7 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger
     }
 }
 
-impl<S: LogSink + Send, const NUM_CHUNKS_IN_BUFFER: usize> Log for Logger<S, NUM_CHUNKS_IN_BUFFER> {
+impl<S: LogSink + Send, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Log for Logger<S, G, NUM_CHUNKS_IN_BUFFER> {
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= self.level_filter
     }
