@@ -13,6 +13,7 @@ use core::{ffi::CStr, fmt::Debug};
 
 use byteorder::{BigEndian, ByteOrder};
 use itertools::Itertools;
+use snafu::Snafu;
 
 pub mod fdt;
 pub mod iter;
@@ -94,7 +95,7 @@ impl core::fmt::Debug for Registers<'_> {
 }
 
 /// A property value in a device tree.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Value<'dt> {
     /// A 32-bit integer.
     U32(u32),
@@ -133,6 +134,125 @@ impl<'dt> Value<'dt> {
                 size_cells,
             }),
             _ => Value::Bytes(bytes),
+        }
+    }
+
+    /// Try to extract the value as a Rust `u32` if it is of type `u32`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `u32`.
+    pub fn as_u32(&self, name: &'dt [u8]) -> Result<&u32, ParseError<'dt>> {
+        if let Self::U32(ref v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "u32",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust `u64` if it is of type `u64`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `u64`.
+    pub fn as_u64(&self, name: &'dt [u8]) -> Result<&u64, ParseError<'dt>> {
+        if let Self::U64(ref v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "u64",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust `u32` if it is of type `phandle`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `phandle`.
+    pub fn as_phandle(&self, name: &'dt [u8]) -> Result<&u32, ParseError<'dt>> {
+        if let Self::Phandle(ref v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "phandle",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust [`CStr`] if it is of type `string`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `string`.
+    pub fn as_string(&self, name: &'dt [u8]) -> Result<&'dt CStr, ParseError<'dt>> {
+        if let Self::String(v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "string",
+            })
+        }
+    }
+
+    /// Try to extract the value as [`StringList`] if it is of type `stringlist`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `stringlist`.
+    pub fn as_strings(&self, name: &'dt [u8]) -> Result<&StringList<'dt>, ParseError<'dt>> {
+        if let Self::StringList(ref v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "stringlist",
+            })
+        }
+    }
+
+    /// Try to extract the value as a Rust `&[u8]` if it is unparsed, returning the raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `bytes`.
+    pub fn as_bytes(&self, name: &'dt [u8]) -> Result<&'dt [u8], ParseError<'dt>> {
+        if let Self::Bytes(v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "bytes",
+            })
+        }
+    }
+
+    /// Try to extract the value as [`Registers`] if it is of type `reg`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a `ParseError::UnexpectedType` if the value is not of type `reg`.
+    pub fn as_reg(&self, name: &'dt [u8]) -> Result<&Registers<'dt>, ParseError<'dt>> {
+        if let Self::Reg(ref v) = *self {
+            Ok(v)
+        } else {
+            Err(ParseError::UnexpectedType {
+                name,
+                value: self.clone(),
+                expected_type: "reg",
+            })
         }
     }
 
@@ -435,15 +555,40 @@ impl DeviceTree<'_> {
     pub fn iter_reserved_memory_regions(&self) -> iter::MemRegionIter {
         iter::MemRegionIter::for_data(self.mem_map)
     }
+}
 
-    // Write the device tree to the system log at DEBUG level.
-    // pub fn log(&self) {
-    //     log::debug!("Device tree:");
-    //     for item in self.iter_structure() {
-    //         log::debug!("{item:x?}");
-    //     }
-    //     log::debug!("-----------");
-    // }
+/// Errors that might arise while processing ("parsing") a node in the device tree.
+#[derive(Debug, Snafu)]
+#[snafu(visibility(pub))]
+pub enum ParseError<'dt> {
+    /// The property was not found in the node.
+    #[snafu(display("Property \"{name}\" not found"))]
+    PropertyNotFound {
+        /// The name of the desired property.
+        name: &'static str,
+    },
+
+    /// A property was found to have an unexpected type.
+    #[snafu(display("Expected value of type {expected_type} for property \"{}\", got: {value:?}", core::str::from_utf8(name).unwrap_or("<property name is invalid UTF-8>")))]
+    UnexpectedType {
+        /// The name of the property.
+        name: &'dt [u8],
+        /// The actual value of the property.
+        value: Value<'dt>,
+        /// A description of the type of value expected to be associated with this property.
+        expected_type: &'static str,
+    },
+
+    /// A property was found to have an unexpected value.
+    #[snafu(display("Unexpected value for property \"{}\", got: {value:?} ({reason})", core::str::from_utf8(name).unwrap_or("<property name is invalid UTF-8>")))]
+    UnexpectedValue {
+        /// The name of the property.
+        name: &'dt [u8],
+        /// The actual value of the property.
+        value: Value<'dt>,
+        /// A description further explaining why the value was unexpected.
+        reason: &'static str,
+    },
 }
 
 #[cfg(test)]
@@ -469,7 +614,7 @@ mod tests {
             Some(Value::StringList(ss)) => {
                 assert!(ss.contains(b"linux,dummy-virt"));
             }
-            c => panic!("unexpected value for /compatible: {:?}", c),
+            c => panic!("unexpected value for /compatible: {c:?}"),
         }
     }
 
@@ -480,7 +625,7 @@ mod tests {
             Some(Value::StringList(ss)) => {
                 assert!(ss.contains(b"arm,armv7-timer"));
             }
-            c => panic!("unexpected value for /compatible: {:?}", c),
+            c => panic!("unexpected value for /compatible: {c:?}"),
         }
     }
 
@@ -491,10 +636,7 @@ mod tests {
             Some(Value::Phandle(v)) => {
                 assert_eq!(v, 0x8003);
             }
-            c => panic!(
-                "unexpected value for /intc@8000000/v2m@8020000/phandle: {:?}",
-                c
-            ),
+            c => panic!("unexpected value for /intc@8000000/v2m@8020000/phandle: {c:?}"),
         }
     }
 
@@ -537,7 +679,7 @@ mod tests {
                 assert_eq!(i.next(), Some((0x0801_0000, 0x1_0000)));
                 assert_eq!(i.next(), None);
             }
-            c => panic!("unexpected value for /intc@8000000/reg: {:?}", c),
+            c => panic!("unexpected value for /intc@8000000/reg: {c:?}"),
         }
     }
 
@@ -552,7 +694,7 @@ mod tests {
                 assert_eq!(i.next(), Some((0, 0)));
                 assert_eq!(i.next(), None);
             }
-            c => panic!("unexpected value for /cpus/cpu@0/reg: {:?}", c),
+            c => panic!("unexpected value for /cpus/cpu@0/reg: {c:?}"),
         }
     }
 

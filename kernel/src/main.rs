@@ -10,22 +10,79 @@ extern crate alloc;
 
 core::arch::global_asm!(core::include_str!("./start.S"));
 
-mod exception;
+mod exceptions;
 mod memory;
 mod running_image;
+mod timer;
 mod uart;
 
 use core::fmt::Write;
 
 use kernel_core::{
-    logger::Logger,
+    logger::{GlobalValueReader, Logger},
     memory::PhysicalPointer,
     platform::device_tree::{DeviceTree, Value as DTValue},
 };
 use log::{debug, info};
 use spin::once::Once;
 
-static LOGGER: Once<Logger<uart::PL011>> = Once::new();
+struct SystemGlobalValueReader;
+
+impl GlobalValueReader for SystemGlobalValueReader {
+    fn read() -> kernel_core::logger::GlobalValues {
+        let mut r = kernel_core::logger::GlobalValues::default();
+        unsafe {
+            core::arch::asm!(
+                "mrs {counter}, CNTPCT_EL0",
+                "mrs {core_id}, MPIDR_EL1",
+                counter = out(reg) r.timer_counter,
+                core_id = out(reg) r.core_id
+            );
+        }
+        // clear multiprocessor flag bit in MPIDR register
+        r.core_id &= !0x8000_0000;
+        r
+    }
+}
+
+static LOGGER: Once<Logger<uart::PL011, SystemGlobalValueReader>> = Once::new();
+
+fn init_logging(device_tree: &DeviceTree) {
+    let stdout_device_path = device_tree
+        .find_property(b"/chosen/stdout-path")
+        .and_then(DTValue::into_bytes)
+        // the string is null terminated in the device tree
+        // TODO: default to QEMU virt board UART for now, should be platform default
+        .map_or(b"/pl011@9000000" as &[u8], |p| &p[0..p.len() - 1]);
+
+    let uart = uart::PL011::from_device_tree(device_tree, stdout_device_path).expect("init UART");
+
+    log::set_max_level(log::LevelFilter::max());
+    log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();
+
+    info!(
+        "\x1b[1mEndless Hole 🕳️\x1b[0m v{} (git: {}@{})",
+        env!("CARGO_PKG_VERSION"),
+        env!("VERGEN_GIT_BRANCH"),
+        env!("VERGEN_GIT_SHA"),
+    );
+
+    if let Some(board_model) = device_tree
+        .find_property(b"/model")
+        .and_then(DTValue::into_string)
+    {
+        info!("Board model: {board_model:?}");
+    }
+
+    debug!("Build timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
+    debug!(
+        "Stdout device path: {:?}",
+        core::str::from_utf8(stdout_device_path)
+    );
+    debug!("Kernel memory region: {:x?}", unsafe {
+        running_image::memory_region()
+    },);
+}
 
 /// The main entry point for the kernel.
 ///
@@ -40,51 +97,25 @@ static LOGGER: Once<Logger<uart::PL011>> = Once::new();
 pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     unsafe {
         running_image::zero_bss_section();
-        exception::install_exception_vector();
+        exceptions::install_exception_vector();
     }
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
 
-    let stdout_device_path = device_tree
-        .find_property(b"/chosen/stdout-path")
-        .and_then(DTValue::into_bytes)
-        // the string is null terminated in the device tree
-        // TODO: default to QEMU virt board UART for now, should be platform default
-        .map_or(b"/pl011@9000000" as &[u8], |p| &p[0..p.len() - 1]);
-
-    let uart = uart::PL011::from_device_tree(&device_tree, stdout_device_path).expect("init UART");
-
-    log::set_max_level(log::LevelFilter::max());
-    log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();
-
-    info!(
-        "\x1b[1mEndless Hole 🕳️\x1b[0m v{} (git: {}@{})",
-        env!("CARGO_PKG_VERSION"),
-        env!("VERGEN_GIT_BRANCH"),
-        env!("VERGEN_GIT_SHA"),
-    );
-
-    debug!("Build Timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
-
-    debug!(
-        "Kernel memory region: {:x?}; Stdout device path: {};",
-        unsafe { running_image::memory_region() },
-        core::str::from_utf8(stdout_device_path).unwrap(),
-    );
-
-    if let Some(board_model) = device_tree
-        .find_property(b"/model")
-        .and_then(DTValue::into_string)
-    {
-        info!("Board model: {board_model:?}");
-    }
+    init_logging(&device_tree);
 
     memory::init(&device_tree);
+    exceptions::init_interrupts(&device_tree);
 
     info!("Boot succesful!");
 
-    #[allow(clippy::empty_loop)]
-    loop {}
+    unsafe {
+        exceptions::CpuExceptionMask::all_enabled().write();
+    }
+
+    loop {
+        exceptions::wait_for_interrupt();
+    }
 }
 
 /// The main entry point for secondary cores in an SMP system.
@@ -92,8 +123,9 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
 #[no_mangle]
 pub extern "C" fn secondary_core_kmain() -> ! {
-    #[allow(clippy::empty_loop)]
-    loop {}
+    loop {
+        exceptions::wait_for_interrupt();
+    }
 }
 
 /// The kernel-wide panic handler.

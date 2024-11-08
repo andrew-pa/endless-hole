@@ -1,10 +1,11 @@
-//! Mechanisms for exception handling
+//! Policies and definitions for processing hardware exceptions.
+//! This includes interrupts, synchronous exceptions, etc.
 
-mod handlers;
-pub use handlers::install_exception_vector;
+pub mod interrupt;
+pub use interrupt::Controller as InterruptController;
+pub use interrupt::Id as InterruptId;
 
-/// A stored version of the system registers x0..x31.
-// TODO: this doesn't really belong in this module.
+/// A stored version of the registers x0..x31.
 #[derive(Default, Copy, Clone, Debug)]
 #[repr(C)]
 pub struct Registers {
@@ -15,7 +16,7 @@ pub struct Registers {
 bitfield::bitfield! {
     /// A value in the ESR (Exception Syndrome Register), which indicates the cause of an
     /// exception.
-    struct ExceptionSyndromeRegister(u64);
+    pub struct ExceptionSyndromeRegister(u64);
     u8;
     iss2, _: 36, 32;
     u8, into ExceptionClass, ec, _: 31, 26;
@@ -23,7 +24,8 @@ bitfield::bitfield! {
     u32, iss, _: 24, 0;
 }
 
-struct ExceptionClass(u8);
+/// An exception class, indicating what kind of synchronous exception occurred.
+pub struct ExceptionClass(u8);
 
 impl From<u8> for ExceptionClass {
     fn from(value: u8) -> Self {

@@ -254,6 +254,7 @@ dependencies = [
  "itertools",
  "kernel_core",
  "log",
+ "snafu",
  "spin",
  "vergen",
  "vergen-git2",
