@@ -6,7 +6,7 @@ use kernel_core::{
     exceptions::{interrupt, InterruptController, InterruptId},
     platform::{
         device_tree::{
-            iter::NodePropertyIter, ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu, Value,
+            iter::NodePropertyIter, ParseError, PropertyNotFoundSnafu, UnexpectedValueSnafu,
         },
         timer::SystemTimer,
     },
@@ -81,49 +81,33 @@ impl Timer {
 
         for (name, value) in node {
             match name {
-                b"compatible" => match &value {
-                    Value::StringList(strings) => {
-                        // make sure that the driver is compatible with the device
-                        ensure!(
-                            strings.iter().any(|model_name| COMPATIBLE
-                                .iter()
-                                .any(|supported_model_name| model_name.to_bytes()
-                                    == *supported_model_name)),
-                            UnexpectedValueSnafu {
-                                name,
-                                value,
-                                reason: "incompatible"
-                            }
-                        );
-                        debug!("Timer compatible device: {strings:?}");
-                    }
-                    _ => {
-                        return Err(ParseError::UnexpectedType {
+                b"compatible" => {
+                    let strings = value.as_strings(name)?;
+                    // make sure that the driver is compatible with the device
+                    ensure!(
+                        strings.iter().any(|model_name| COMPATIBLE
+                            .iter()
+                            .any(|supported_model_name| model_name.to_bytes()
+                                == *supported_model_name)),
+                        UnexpectedValueSnafu {
                             name,
                             value,
-                            expected_type: "StringList",
-                        })
-                    }
-                },
-                b"interrupts" => match value {
-                    Value::Bytes(interrupts_blob) => {
-                        let i = intc.interrupt_in_device_tree(interrupts_blob, 1).context(
-                            UnexpectedValueSnafu {
-                                name,
-                                value,
-                                reason: "expected interrupt #1 to exist",
-                            },
-                        )?;
-                        int = Some(i);
-                    }
-                    _ => {
-                        return Err(ParseError::UnexpectedType {
+                            reason: "incompatible"
+                        }
+                    );
+                    debug!("Timer compatible device: {strings:?}");
+                }
+                b"interrupts" => {
+                    let interrupts_blob = value.as_bytes(name)?;
+                    let i = intc.interrupt_in_device_tree(interrupts_blob, 1).context(
+                        UnexpectedValueSnafu {
                             name,
                             value,
-                            expected_type: "Bytes",
-                        })
-                    }
-                },
+                            reason: "expected interrupt #1 to exist",
+                        },
+                    )?;
+                    int = Some(i);
+                }
                 _ => {}
             }
         }
