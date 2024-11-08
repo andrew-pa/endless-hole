@@ -224,12 +224,9 @@ impl Controller for GenericV2 {
                 id,
                 config.priority,
             );
-            write_byte_for_id(
-                *distributor_base,
-                dist_regs::ITARGETSR_N,
-                id,
-                config.target_cpu,
-            );
+
+            // for now, make sure that all CPUs recieve this interrupt.
+            write_byte_for_id(*distributor_base, dist_regs::ITARGETSR_N, id, 0xff);
         }
     }
 

@@ -118,7 +118,6 @@ impl Timer {
             int_id: id,
             int_config: interrupt::Config {
                 priority: 0,
-                target_cpu: 0x01,
                 mode: trigger_mode,
             },
             reset_value: frequency() / interval,

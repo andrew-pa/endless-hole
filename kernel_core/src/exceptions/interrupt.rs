@@ -17,16 +17,11 @@ pub enum TriggerMode {
     Edge,
 }
 
-/// A value that gives a boolean value for each CPU in the system.
-pub type CpuMask = u8;
-
 /// The configuration of an interrupt with the interrupt controller.
 #[derive(Debug, Default)]
 pub struct Config {
     /// Priority level.
     pub priority: u8,
-    /// CPUs that will handle the interrupt.
-    pub target_cpu: CpuMask,
     /// Triggering mode for the interrupt.
     pub mode: TriggerMode,
 }
