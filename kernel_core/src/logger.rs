@@ -17,14 +17,17 @@ fn color_for_level(lvl: Level) -> &'static str {
     }
 }
 
-/// Trait for reading global values like core ID and timer counter.
-pub trait GlobalValueReader {
+/// A reader for global system values.
+pub trait GlobalValueReader: Send + Sync {
+    /// Read the current global system state so that it can be added to a log record.
     fn read() -> GlobalValues;
 }
 
-/// Struct to hold global values like core ID and timer counter.
+/// Struct to hold global values.
 pub struct GlobalValues {
+    /// The ID of the current CPU core.
     pub core_id: usize,
+    /// The current value of the system timer.
     pub timer_counter: u64,
 }
 
@@ -143,8 +146,8 @@ const SIZE_MASK: usize = !STATUS_MASK;
 /// A lock-free concurrent logger with a ring buffer.
 ///
 /// By default `NUM_CHUNKS_IN_BUFFER = 128`, which is a 16KiB buffer.
-pub struct Logger<S, G, const NUM_CHUNKS_IN_BUFFER: usize = 128> {
-    _global_value_reader: PhantomData<G>,
+pub struct Logger<S, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize = 128> {
+    global_value_reader: PhantomData<G>,
     buffer: [LogChunk; NUM_CHUNKS_IN_BUFFER],
     write_index: AtomicUsize,
     read_index: AtomicUsize,
@@ -153,7 +156,9 @@ pub struct Logger<S, G, const NUM_CHUNKS_IN_BUFFER: usize = 128> {
     level_filter: LevelFilter,
 }
 
-impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger<S, G, NUM_CHUNKS_IN_BUFFER> {
+impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize>
+    Logger<S, G, NUM_CHUNKS_IN_BUFFER>
+{
     /// Creates a new `Logger` with the specified sink and log level filter.
     pub fn new(sink: S, level_filter: LevelFilter) -> Self {
         Self {
@@ -163,7 +168,7 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger
             overflow_count: AtomicUsize::new(0),
             sink: Mutex::new(sink),
             level_filter,
-            _global_value_reader: PhantomData,
+            global_value_reader: PhantomData,
         }
     }
 
@@ -181,13 +186,13 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger
         // Write formatted data directly into the ring buffer.
         writeln!(
             &mut writer,
-            "\x1b[{}m{:<5}\x1b[0m {}@{}| Core: {} Timer: {} | {}",
+            "\x1b[{}m{:<5} \x1b[90mT{} C{}\x1b[0m {}@{}| {}",
             color_for_level(record.level()),
             record.level(),
-            module_path,
-            line,
             global_values.core_id,
             global_values.timer_counter,
+            module_path,
+            line,
             record.args()
         )
         .unwrap();
@@ -226,30 +231,11 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger
             }
         }
     }
-
-    /// Write a record into the buffer.
-    fn write_record(&self, record: &Record) {
-        // Create a RingBufferWriter.
-        let mut writer = RingBufferWriter::new(self);
-
-        let module_path = record.module_path().unwrap_or("unknown module");
-        let line = record.line().unwrap_or(0);
-
-        // Write formatted data directly into the ring buffer.
-        writeln!(
-            &mut writer,
-            "\x1b[{}m{:<5}\x1b[0m {}@{}| {}",
-            color_for_level(record.level()),
-            record.level(),
-            module_path,
-            line,
-            record.args()
-        )
-        .unwrap();
-    }
 }
 
-impl<S: LogSink + Send, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Log for Logger<S, G, NUM_CHUNKS_IN_BUFFER> {
+impl<S: LogSink + Send, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Log
+    for Logger<S, G, NUM_CHUNKS_IN_BUFFER>
+{
     fn enabled(&self, metadata: &Metadata) -> bool {
         metadata.level() <= self.level_filter
     }
@@ -274,15 +260,15 @@ impl<S: LogSink + Send, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize>
 }
 
 /// A writer that writes directly into the ring buffer.
-struct RingBufferWriter<'a, S: LogSink, const N: usize> {
-    logger: &'a Logger<S, N>,
+struct RingBufferWriter<'a, S: LogSink, G: GlobalValueReader, const N: usize> {
+    logger: &'a Logger<S, G, N>,
     current_chunk: Option<ChunkWriteGuard<'a>>,
     current_chunk_offset: usize,
 }
 
-impl<'a, S: LogSink, const N: usize> RingBufferWriter<'a, S, N> {
+impl<'a, S: LogSink, G: GlobalValueReader, const N: usize> RingBufferWriter<'a, S, G, N> {
     /// Creates a new `RingBufferWriter`.
-    fn new(logger: &'a Logger<S, N>) -> Self {
+    fn new(logger: &'a Logger<S, G, N>) -> Self {
         Self {
             logger,
             current_chunk: None,
@@ -326,7 +312,9 @@ impl<'a, S: LogSink, const N: usize> RingBufferWriter<'a, S, N> {
     }
 }
 
-impl<S: LogSink, const N: usize> core::fmt::Write for RingBufferWriter<'_, S, N> {
+impl<S: LogSink, G: GlobalValueReader, const N: usize> core::fmt::Write
+    for RingBufferWriter<'_, S, G, N>
+{
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         let mut s = s.as_bytes();
         while !s.is_empty() {
@@ -360,7 +348,7 @@ impl<S: LogSink, const N: usize> core::fmt::Write for RingBufferWriter<'_, S, N>
     }
 }
 
-impl<S: LogSink, const N: usize> Drop for RingBufferWriter<'_, S, N> {
+impl<S: LogSink, G: GlobalValueReader, const N: usize> Drop for RingBufferWriter<'_, S, G, N> {
     fn drop(&mut self) {
         self.finish_chunk();
     }
