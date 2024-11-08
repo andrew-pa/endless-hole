@@ -75,9 +75,9 @@ impl GenericV2 {
                     }
                 },
                 b"#interrupt-cells" => match &value {
-                    Value::U32(n) => {
+                    Value::Bytes(n) => {
                         ensure!(
-                            *n == 3,
+                            n.len() == 4 && n[3] == 3,
                             UnexpectedValueSnafu {
                                 name,
                                 value,
@@ -215,7 +215,7 @@ impl Controller for GenericV2 {
         let d = &data[index * 12..(index + 1) * 12];
         let first_cell = BigEndian::read_u32(&d[0..4]);
         let second_cell = BigEndian::read_u32(&d[4..8]);
-        let third_cell = BigEndian::read_u32(&d[8..12]);
+        let flags = d[11];
 
         let id = match first_cell {
             0 => {
@@ -231,7 +231,7 @@ impl Controller for GenericV2 {
             _ => return None,
         };
 
-        let trigger_mode = match third_cell & 0xf {
+        let trigger_mode = match flags {
             0b0001 | 0b0010 => TriggerMode::Edge,
             0b0100 | 0b1000 => TriggerMode::Level,
             _ => return None,
@@ -284,10 +284,10 @@ impl Controller for GenericV2 {
 
     fn ack_interrupt(&self) -> Option<Id> {
         let id = unsafe { self.cpu_base.add(cpu_regs::IAR).read_volatile() };
-        trace!("ack interrupt {id}");
         if id == INTID_NONE_PENDING {
             None
         } else {
+            trace!("ack interrupt {id}");
             Some(id)
         }
     }

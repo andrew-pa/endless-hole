@@ -28,24 +28,7 @@ use spin::once::Once;
 
 static LOGGER: Once<Logger<uart::PL011>> = Once::new();
 
-/// The main entry point for the kernel.
-///
-/// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
-/// The device tree blob is provided by U-Boot, see `u-boot/arch/arm/lib/bootm.c:boot_jump_linux(...)`.
-///
-/// # Panics
-///
-/// If something goes wrong during the boot process that is unrecoverable, a panic will occur.
-#[no_mangle]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
-    unsafe {
-        running_image::zero_bss_section();
-        exceptions::install_exception_vector();
-    }
-
-    let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
-
+fn init_logging(device_tree: &DeviceTree) {
     let stdout_device_path = device_tree
         .find_property(b"/chosen/stdout-path")
         .and_then(DTValue::into_bytes)
@@ -65,14 +48,6 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         env!("VERGEN_GIT_SHA"),
     );
 
-    debug!("Build Timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
-
-    debug!(
-        "Kernel memory region: {:x?}; Stdout device path: {};",
-        unsafe { running_image::memory_region() },
-        core::str::from_utf8(stdout_device_path).unwrap(),
-    );
-
     if let Some(board_model) = device_tree
         .find_property(b"/model")
         .and_then(DTValue::into_string)
@@ -80,10 +55,44 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
         info!("Board model: {board_model:?}");
     }
 
+    debug!("Build timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
+    debug!(
+        "Stdout device path: {:?}",
+        core::str::from_utf8(stdout_device_path)
+    );
+    debug!("Kernel memory region: {:x?}", unsafe {
+        running_image::memory_region()
+    },);
+}
+
+/// The main entry point for the kernel.
+///
+/// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
+/// The device tree blob is provided by U-Boot, see `u-boot/arch/arm/lib/bootm.c:boot_jump_linux(...)`.
+///
+/// # Panics
+///
+/// If something goes wrong during the boot process that is unrecoverable, a panic will occur.
+#[no_mangle]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
+    unsafe {
+        running_image::zero_bss_section();
+        exceptions::install_exception_vector();
+    }
+
+    let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
+
+    init_logging(&device_tree);
+
     memory::init(&device_tree);
     exceptions::init_interrupts(&device_tree);
 
     info!("Boot succesful!");
+
+    unsafe {
+        exceptions::CpuExceptionMask::all_enabled().write();
+    }
 
     #[allow(clippy::empty_loop)]
     loop {}
