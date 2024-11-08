@@ -1,6 +1,7 @@
 //! A lock-free concurrent logger.
 use core::cell::UnsafeCell;
 use core::fmt::Write;
+use core::marker::PhantomData;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use spin::Mutex;
@@ -15,6 +16,16 @@ fn color_for_level(lvl: Level) -> &'static str {
         Level::Trace => "35",
     }
 }
+
+/// Trait for reading global values like core ID and timer counter.
+pub trait GlobalValueReader {
+    fn read() -> GlobalValues;
+}
+
+/// Struct to hold global values like core ID and timer counter.
+pub struct GlobalValues {
+    pub core_id: usize,
+    pub timer_counter: u64,
 
 /// Trait representing a sink that accepts log chunks.
 pub trait LogSink {
@@ -131,7 +142,8 @@ const SIZE_MASK: usize = !STATUS_MASK;
 /// A lock-free concurrent logger with a ring buffer.
 ///
 /// By default `NUM_CHUNKS_IN_BUFFER = 128`, which is a 16KiB buffer.
-pub struct Logger<S, const NUM_CHUNKS_IN_BUFFER: usize = 128> {
+pub struct Logger<S, G, const NUM_CHUNKS_IN_BUFFER: usize = 128> {
+    _global_value_reader: PhantomData<G>,
     buffer: [LogChunk; NUM_CHUNKS_IN_BUFFER],
     write_index: AtomicUsize,
     read_index: AtomicUsize,
@@ -140,9 +152,45 @@ pub struct Logger<S, const NUM_CHUNKS_IN_BUFFER: usize = 128> {
     level_filter: LevelFilter,
 }
 
-impl<S: LogSink, const NUM_CHUNKS_IN_BUFFER: usize> Logger<S, NUM_CHUNKS_IN_BUFFER> {
+impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize> Logger<S, G, NUM_CHUNKS_IN_BUFFER> {
     /// Creates a new `Logger` with the specified sink and log level filter.
     pub fn new(sink: S, level_filter: LevelFilter) -> Self {
+        Self {
+            buffer: [const { LogChunk::new() }; NUM_CHUNKS_IN_BUFFER],
+            write_index: AtomicUsize::new(0),
+            read_index: AtomicUsize::new(0),
+            overflow_count: AtomicUsize::new(0),
+            sink: Mutex::new(sink),
+            level_filter,
+            _global_value_reader: PhantomData,
+        }
+    }
+
+    /// Write a record into the buffer.
+    fn write_record(&self, record: &Record) {
+        // Create a RingBufferWriter.
+        let mut writer = RingBufferWriter::new(self);
+
+        let module_path = record.module_path().unwrap_or("unknown module");
+        let line = record.line().unwrap_or(0);
+
+        // Read global values.
+        let global_values = G::read();
+
+        // Write formatted data directly into the ring buffer.
+        writeln!(
+            &mut writer,
+            "\x1b[{}m{:<5}\x1b[0m {}@{}| Core: {} Timer: {} | {}",
+            color_for_level(record.level()),
+            record.level(),
+            module_path,
+            line,
+            global_values.core_id,
+            global_values.timer_counter,
+            record.args()
+        )
+        .unwrap();
+    }
         Self {
             buffer: [const { LogChunk::new() }; NUM_CHUNKS_IN_BUFFER],
             write_index: AtomicUsize::new(0),
