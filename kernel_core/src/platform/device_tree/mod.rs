@@ -598,8 +598,50 @@ pub enum ParseError<'dt> {
     },
 }
 
-#[cfg(test)]
-mod tests {
+#[derive(Debug)]
+pub enum OwnedParseError {
+    PropertyNotFound {
+        name: String,
+    },
+    NodeNotFound {
+        path: String,
+    },
+    UnexpectedType {
+        name: String,
+        value: String,
+        expected_type: String,
+    },
+    UnexpectedValue {
+        name: String,
+        value: String,
+        reason: String,
+    },
+}
+
+impl<'dt> ToOwned for ParseError<'dt> {
+    type Owned = OwnedParseError;
+
+    fn to_owned(&self) -> Self::Owned {
+        match self {
+            ParseError::PropertyNotFound { name } => OwnedParseError::PropertyNotFound {
+                name: name.to_string(),
+            },
+            ParseError::NodeNotFound { path } => OwnedParseError::NodeNotFound {
+                path: path.to_string(),
+            },
+            ParseError::UnexpectedType { name, value, expected_type } => OwnedParseError::UnexpectedType {
+                name: String::from_utf8_lossy(name).into_owned(),
+                value: format!("{:?}", value),
+                expected_type: expected_type.to_string(),
+            },
+            ParseError::UnexpectedValue { name, value, reason } => OwnedParseError::UnexpectedValue {
+                name: String::from_utf8_lossy(name).into_owned(),
+                value: format!("{:?}", value),
+                reason: reason.to_string(),
+            },
+        }
+    }
+}
     use std::{string::ToString as _, vec::Vec};
 
     use super::*;
