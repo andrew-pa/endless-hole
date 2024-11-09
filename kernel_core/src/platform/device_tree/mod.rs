@@ -568,6 +568,13 @@ pub enum ParseError<'dt> {
         name: &'static str,
     },
 
+    /// The node was not found.
+    #[snafu(display("Node \"{path}\" not found"))]
+    NodeNotFound {
+        /// The path of the desired node.
+        path: &'static str,
+    },
+
     /// A property was found to have an unexpected type.
     #[snafu(display("Expected value of type {expected_type} for property \"{}\", got: {value:?}", core::str::from_utf8(name).unwrap_or("<property name is invalid UTF-8>")))]
     UnexpectedType {
