@@ -35,13 +35,8 @@ fn init_smp(device_tree: &DeviceTree) {
 
     let entry_point_address = PhysicalAddress::from(_secondary_core_start as *mut ());
 
-    boot_all_cores(
-        device_tree,
-        &power,
-        entry_point_address.into(),
-        page_allocator(),
-    )
-    .expect("boot all cores on board");
+    boot_all_cores(device_tree, &power, entry_point_address, page_allocator())
+        .expect("boot all cores on board");
 }
 
 /// The main entry point for the kernel.

@@ -21,8 +21,8 @@ fmt cargo_args="":
 # Check formatting, types and lints.
 check cargo_args="" clippy_args="":
     cargo fmt --check {{cargo_args}}
-    cargo check --all-features {{cargo_args}}
-    cargo clippy --all-features {{cargo_args}} -- -Dmissing_docs -Dclippy::all -Wclippy::pedantic {{clippy_args}}
+    cargo check --target aarch64-unknown-none --all-features {{cargo_args}}
+    cargo clippy --target aarch64-unknown-none --all-features {{cargo_args}} -- -Dmissing_docs -Dclippy::all -Wclippy::pedantic {{clippy_args}}
 
 # Test Rust crates that are testable on the host.
 test cargo_args="":
