@@ -347,6 +347,14 @@ impl core::ops::Mul<PageSize> for usize {
     }
 }
 
+impl core::ops::Div<PageSize> for usize {
+    type Output = usize;
+
+    fn div(self, rhs: PageSize) -> Self::Output {
+        self / usize::from(rhs)
+    }
+}
+
 /// A memory allocator that provides pages of physical memory.
 ///
 /// Implementers of this trait must provide internal synchronization and each associated function
@@ -398,7 +406,7 @@ pub trait MemoryManagmentUnit {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use snafu::{ensure, OptionExt};
 
     use crate::memory::{InvalidSizeSnafu, OutOfMemorySnafu, PhysicalPointer, UnknownPtrSnafu};

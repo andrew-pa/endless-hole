@@ -598,55 +598,85 @@ pub enum ParseError<'dt> {
     },
 }
 
-#[derive(Debug)]
+use alloc::string::String;
+
+/// A [`ParseError`] that has owned values instead of borrowing them from the device tree.
+#[derive(Debug, Snafu)]
+#[snafu(module)]
 pub enum OwnedParseError {
+    /// The property was not found in the node.
+    #[snafu(display("Property \"{name}\" not found"))]
     PropertyNotFound {
-        name: String,
+        /// Name of the desired property.
+        name: &'static str,
     },
+    /// The node was not found.
+    #[snafu(display("Node \"{path}\" not found"))]
     NodeNotFound {
-        path: String,
+        /// Path of the desired node.
+        path: &'static str,
     },
+    /// A property was found to have an unexpected type.
+    #[snafu(display(
+        "Expected value of type {expected_type} for property \"{name}\", got: {value:?}"
+    ))]
     UnexpectedType {
+        /// The name of the property.
         name: String,
+        /// Formatted actual value of the property.
         value: String,
-        expected_type: String,
+        /// Expected type of the property.
+        expected_type: &'static str,
     },
+    /// A property was found to have an unexpected value.
+    #[snafu(display("Unexpected value for property \"{name}\", got: {value:?} ({reason})"))]
     UnexpectedValue {
+        /// The name of the property.
         name: String,
+        /// Formatted actual value of the property.
         value: String,
-        reason: String,
+        /// A description further explaining why the value was unexpected.
+        reason: &'static str,
     },
 }
 
-impl<'dt> ToOwned for ParseError<'dt> {
-    type Owned = OwnedParseError;
-
-    fn to_owned(&self) -> Self::Owned {
+impl<'dt> ParseError<'dt> {
+    /// Copy a [`ParseError`] onto the heap so it no longer references the device tree.
+    #[must_use]
+    pub fn to_owned(self) -> OwnedParseError {
         match self {
-            ParseError::PropertyNotFound { name } => OwnedParseError::PropertyNotFound {
-                name: name.to_string(),
-            },
-            ParseError::NodeNotFound { path } => OwnedParseError::NodeNotFound {
-                path: path.to_string(),
-            },
-            ParseError::UnexpectedType { name, value, expected_type } => OwnedParseError::UnexpectedType {
+            ParseError::PropertyNotFound { name } => OwnedParseError::PropertyNotFound { name },
+            ParseError::NodeNotFound { path } => OwnedParseError::NodeNotFound { path },
+            ParseError::UnexpectedType {
+                name,
+                value,
+                expected_type,
+            } => OwnedParseError::UnexpectedType {
                 name: String::from_utf8_lossy(name).into_owned(),
-                value: format!("{:?}", value),
-                expected_type: expected_type.to_string(),
+                value: alloc::format!("{value:?}"),
+                expected_type,
             },
-            ParseError::UnexpectedValue { name, value, reason } => OwnedParseError::UnexpectedValue {
+            ParseError::UnexpectedValue {
+                name,
+                value,
+                reason,
+            } => OwnedParseError::UnexpectedValue {
                 name: String::from_utf8_lossy(name).into_owned(),
-                value: format!("{:?}", value),
-                reason: reason.to_string(),
+                value: alloc::format!("{value:?}"),
+                reason,
             },
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
     use std::{string::ToString as _, vec::Vec};
 
     use super::*;
 
     /// This test tree blob was generated using QEMU:
+    ///
     /// ```bash
     /// $ qemu-system-aarch64 -machine virt,dumpdtb=kernel_core/src/platform/device_tree/test-tree.fdt
     /// ```
