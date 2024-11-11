@@ -1,17 +1,14 @@
 //! CPU management
 
-use alloc::borrow::ToOwned;
-use core::ffi::CStr;
 use log::{debug, info};
 
+#[cfg(test)]
+use mockall::automock;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::{
-    memory::{PageAllocator, PhysicalAddress, PhysicalPointer},
-    platform::device_tree::{
-        DeviceTree, NodeNotFoundSnafu, OwnedParseError, ParseError, PropertyNotFoundSnafu,
-        UnexpectedValueSnafu,
-    },
+    memory::{PageAllocator, PhysicalAddress},
+    platform::device_tree::{DeviceTree, NodeNotFoundSnafu, OwnedParseError, UnexpectedValueSnafu},
 };
 
 /// A unique identifier for a single CPU core.
@@ -33,9 +30,14 @@ pub enum PowerManagerError {
 }
 
 /// Mechanism interface for managing CPU power state.
+#[cfg_attr(test, automock)]
 pub trait PowerManager {
     /// Powers on a core that is currently off.
     /// The core will start executing at `entry_point_address`, with `arg` passed as the argument.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying hardware interface fails to start the core or rejects
+    /// the given parameters.
     ///
     /// # Safety
     /// The entry point address must be valid or else undefined behavior will occur on the target core.
@@ -48,7 +50,7 @@ pub trait PowerManager {
 
     /// The string value of the "enable-method" device tree property that indicates that a core can
     /// be enabled with this interface.
-    fn enable_method_name() -> &'static CStr;
+    fn enable_method_name() -> &'static [u8];
 }
 
 /// Errors that can occur during SMP bring-up.
@@ -79,8 +81,13 @@ pub enum BootAllCoresError {
 }
 
 /// Power on all cores as described by the device tree.
-pub fn boot_all_cores<'dt, PM: PowerManager>(
-    device_tree: &'dt DeviceTree,
+///
+/// # Errors
+/// Errors can come from parsing the device tree, finding an unsupported enable method, the power
+/// management interface, or the memory allocator.
+/// See [`BootAllCoresError`] for details.
+pub fn boot_all_cores<PM: PowerManager>(
+    device_tree: &DeviceTree,
     power: &PM,
     entry_point_address: PhysicalAddress,
     page_allocator: &impl PageAllocator,
@@ -104,7 +111,7 @@ pub fn boot_all_cores<'dt, PM: PowerManager>(
                 b"enable-method" => {
                     let enable_method =
                         value
-                            .as_string(name)
+                            .as_bytes(name)
                             .map_err(|s| BootAllCoresError::DeviceTree {
                                 cause: s.to_owned(),
                             })?;
@@ -112,7 +119,7 @@ pub fn boot_all_cores<'dt, PM: PowerManager>(
                     ensure!(
                         enable_method == PM::enable_method_name(),
                         UnsupportedEnableMethodSnafu {
-                            method: enable_method.to_string_lossy().into_owned()
+                            method: core::str::from_utf8(enable_method).unwrap_or("unknown")
                         }
                     );
                 }
@@ -144,6 +151,11 @@ pub fn boot_all_cores<'dt, PM: PowerManager>(
             cause: OwnedParseError::PropertyNotFound { name: "reg" },
         })?;
 
+        if cpu_id == 0 {
+            // skip the boot cpu
+            continue;
+        }
+
         // allocate a new 4MiB stack for the core kernel thread.
         let stack_size = 4 * 1024 * 1024;
         let stack = page_allocator
@@ -174,14 +186,11 @@ pub fn boot_all_cores<'dt, PM: PowerManager>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use mockall::predicate::{eq, function};
 
-    /// This test tree blob was generated using QEMU:
-    ///
-    /// ```bash
-    /// $ qemu-system-aarch64 -machine virt,dumpdtb=kernel_core/src/platform/device_tree/test-tree.fdt
-    /// ```
-    const TEST_TREE_BLOB: &[u8] = include_bytes!("./device_tree/test-tree.fdt");
+    use crate::memory::PageSize;
+
+    use super::*;
 
     /// This test tree blob was generated using QEMU:
     ///
@@ -192,21 +201,37 @@ mod tests {
     /// This blob should be identical to the [`TEST_TREE_BLOB`], but have 8 cores.
     const TEST_TREE_BLOB_SMP8: &[u8] = include_bytes!("./device_tree/test-tree-smp8.fdt");
 
-    fn test_tree() -> DeviceTree<'static> {
-        DeviceTree::from_bytes(TEST_TREE_BLOB)
-    }
-
     fn test_tree_smp8() -> DeviceTree<'static> {
-        DeviceTree::from_bytes(TEST_TREE_BLOB)
+        DeviceTree::from_bytes(TEST_TREE_BLOB_SMP8)
     }
 
     #[test]
     fn boot_cores() {
+        env_logger::init();
+
         let dt = test_tree_smp8();
-        let pa = crate::memory::tests::MockPageAllocator::new(
-            crate::memory::PageSize::FourKiB,
-            8 * 1024,
-        );
-        boot_all_cores(&dt, &pm, PhysicalPointer::from(0xbeef_feed), &pa).expect("boot all cores");
+        let mut pa = crate::memory::MockPageAllocator::new();
+        pa.expect_page_size().return_const(PageSize::FourKiB);
+        pa.expect_allocate()
+            .times(7)
+            .with(eq(1024))
+            .returning(|_| Ok(PhysicalAddress::from(0xee_0000)));
+
+        let epa: usize = 0xbeef_feed;
+        let mut pm = MockPowerManager::new();
+        let cx = MockPowerManager::enable_method_name_context();
+        cx.expect().return_const(b"psci\0" as &'static [u8]);
+        for i in 1..8 {
+            pm.expect_start_core()
+                .once()
+                .with(
+                    eq(i),
+                    function(move |x: &PhysicalAddress| usize::from(*x) == epa),
+                    eq(0xee_0000),
+                )
+                .returning(|_, _, _| Ok(()));
+        }
+
+        boot_all_cores(&dt, &pm, epa.into(), &pa).expect("boot all cores");
     }
 }

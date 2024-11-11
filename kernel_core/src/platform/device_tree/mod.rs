@@ -640,7 +640,7 @@ pub enum OwnedParseError {
     },
 }
 
-impl<'dt> ParseError<'dt> {
+impl ParseError<'_> {
     /// Copy a [`ParseError`] onto the heap so it no longer references the device tree.
     #[must_use]
     pub fn to_owned(self) -> OwnedParseError {
