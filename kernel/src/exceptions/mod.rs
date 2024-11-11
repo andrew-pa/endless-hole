@@ -6,6 +6,7 @@ pub use handlers::install_exception_vector;
 mod interrupt;
 
 pub use interrupt::init as init_interrupts;
+pub use interrupt::init_for_core as init_interrupts_for_core;
 pub use interrupt::wait_for_interrupt;
 
 use bitfield::bitfield;

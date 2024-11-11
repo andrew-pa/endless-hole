@@ -11,77 +11,37 @@ extern crate alloc;
 core::arch::global_asm!(core::include_str!("./start.S"));
 
 mod exceptions;
+mod logging;
 mod memory;
+mod psci;
 mod running_image;
 mod timer;
 mod uart;
 
-use core::fmt::Write;
-
 use kernel_core::{
-    logger::{GlobalValueReader, Logger},
-    memory::PhysicalPointer,
-    platform::device_tree::{DeviceTree, Value as DTValue},
+    memory::{PhysicalAddress, PhysicalPointer},
+    platform::{cpu::boot_all_cores, device_tree::DeviceTree},
 };
 use log::{debug, info};
-use spin::once::Once;
+use memory::page_allocator;
 
-struct SystemGlobalValueReader;
-
-impl GlobalValueReader for SystemGlobalValueReader {
-    fn read() -> kernel_core::logger::GlobalValues {
-        let mut r = kernel_core::logger::GlobalValues::default();
-        unsafe {
-            core::arch::asm!(
-                "mrs {counter}, CNTPCT_EL0",
-                "mrs {core_id}, MPIDR_EL1",
-                counter = out(reg) r.timer_counter,
-                core_id = out(reg) r.core_id
-            );
-        }
-        // clear multiprocessor flag bit in MPIDR register
-        r.core_id &= !0x8000_0000;
-        r
-    }
+extern "C" {
+    /// Defined in `start.S`.
+    pub fn _secondary_core_start();
 }
 
-static LOGGER: Once<Logger<uart::PL011, SystemGlobalValueReader>> = Once::new();
+fn init_smp(device_tree: &DeviceTree) {
+    let power = psci::Psci::in_device_tree(device_tree).expect("get PSCI info from device tree");
 
-fn init_logging(device_tree: &DeviceTree) {
-    let stdout_device_path = device_tree
-        .find_property(b"/chosen/stdout-path")
-        .and_then(DTValue::into_bytes)
-        // the string is null terminated in the device tree
-        // TODO: default to QEMU virt board UART for now, should be platform default
-        .map_or(b"/pl011@9000000" as &[u8], |p| &p[0..p.len() - 1]);
+    let entry_point_address = PhysicalAddress::from(_secondary_core_start as *mut ());
 
-    let uart = uart::PL011::from_device_tree(device_tree, stdout_device_path).expect("init UART");
-
-    log::set_max_level(log::LevelFilter::max());
-    log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();
-
-    info!(
-        "\x1b[1mEndless Hole 🕳️\x1b[0m v{} (git: {}@{})",
-        env!("CARGO_PKG_VERSION"),
-        env!("VERGEN_GIT_BRANCH"),
-        env!("VERGEN_GIT_SHA"),
-    );
-
-    if let Some(board_model) = device_tree
-        .find_property(b"/model")
-        .and_then(DTValue::into_string)
-    {
-        info!("Board model: {board_model:?}");
-    }
-
-    debug!("Build timestamp: {}", env!("VERGEN_BUILD_TIMESTAMP"));
-    debug!(
-        "Stdout device path: {:?}",
-        core::str::from_utf8(stdout_device_path)
-    );
-    debug!("Kernel memory region: {:x?}", unsafe {
-        running_image::memory_region()
-    },);
+    boot_all_cores(
+        device_tree,
+        &power,
+        entry_point_address.into(),
+        page_allocator(),
+    )
+    .expect("boot all cores on board");
 }
 
 /// The main entry point for the kernel.
@@ -102,10 +62,12 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 
     let device_tree = unsafe { DeviceTree::from_memory(device_tree_blob.into()) };
 
-    init_logging(&device_tree);
+    logging::init_logging(&device_tree);
 
     memory::init(&device_tree);
     exceptions::init_interrupts(&device_tree);
+
+    init_smp(&device_tree);
 
     info!("Boot succesful!");
 
@@ -123,6 +85,14 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
 #[no_mangle]
 pub extern "C" fn secondary_core_kmain() -> ! {
+    debug!("Secondary core init");
+
+    exceptions::init_interrupts_for_core();
+
+    unsafe {
+        exceptions::CpuExceptionMask::all_enabled().write();
+    }
+
     loop {
         exceptions::wait_for_interrupt();
     }
@@ -133,7 +103,9 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 /// Code here should not assume anything about the state of the kernel.
 /// Currently this only writes to the platform defined debug UART.
 #[panic_handler]
+#[cfg(not(test))]
 pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    use core::fmt::Write;
     unsafe {
         let mut uart = uart::PL011::from_platform_debug_best_guess();
 

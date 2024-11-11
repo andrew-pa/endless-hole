@@ -54,7 +54,7 @@ halt:
 
 .global _secondary_core_start
 
-_secondary_cpu_start:
+_secondary_core_start:
     /* context is our stack pointer */
     mov sp, x0
 

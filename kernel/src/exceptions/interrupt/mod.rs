@@ -40,7 +40,6 @@ pub fn init(device_tree: &DeviceTree<'_>) {
     });
 
     controller.global_initialize();
-    controller.initialize_for_core();
 
     let timer_node = device_tree
         .iter_node_properties(b"/timer")
@@ -52,9 +51,14 @@ pub fn init(device_tree: &DeviceTree<'_>) {
 
     HANDLER_POLICY.call_once(|| Handler::new(controller.as_ref(), timer));
 
-    Timer::start_for_core();
+    init_for_core();
 
     info!("Interrupts initialized!");
+}
+
+pub fn init_for_core() {
+    CONTROLLER.get().unwrap().initialize_for_core();
+    Timer::start_for_core();
 }
 
 /// Wait for an interrupt to occur, pausing execution.

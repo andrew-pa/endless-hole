@@ -7,7 +7,7 @@ use mockall::automock;
 use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::{
-    memory::{PageAllocator, PhysicalAddress},
+    memory::{PageAllocator, PhysicalAddress, VirtualAddress},
     platform::device_tree::{DeviceTree, NodeNotFoundSnafu, OwnedParseError, UnexpectedValueSnafu},
 };
 
@@ -80,7 +80,7 @@ pub enum BootAllCoresError {
     },
 }
 
-/// Power on all cores as described by the device tree.
+/// Power on all cores as described by the device tree, and allocates stacks for them.
 ///
 /// # Errors
 /// Errors can come from parsing the device tree, finding an unsupported enable method, the power
@@ -158,9 +158,10 @@ pub fn boot_all_cores<PM: PowerManager>(
 
         // allocate a new 4MiB stack for the core kernel thread.
         let stack_size = 4 * 1024 * 1024;
-        let stack = page_allocator
+        let stack: VirtualAddress = page_allocator
             .allocate(stack_size / page_allocator.page_size())
-            .context(MemorySnafu)?;
+            .context(MemorySnafu)?
+            .into();
 
         debug!(
             "starting cpu@{}, id=0x{cpu_id:x}, stack@{stack:?}",
