@@ -80,6 +80,10 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
 #[no_mangle]
 pub extern "C" fn secondary_core_kmain() -> ! {
+    unsafe {
+        exceptions::install_exception_vector();
+    }
+
     debug!("Secondary core init");
 
     exceptions::init_interrupts_for_core();
@@ -100,6 +104,7 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 #[panic_handler]
 #[cfg(not(test))]
 pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
+    // TODO: somehow make sure that if one core panics, they all halt. Probably via SGI?
     use core::fmt::Write;
     unsafe {
         let mut uart = uart::PL011::from_platform_debug_best_guess();

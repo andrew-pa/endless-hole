@@ -161,6 +161,7 @@ pub fn boot_all_cores<PM: PowerManager>(
         let stack: VirtualAddress = page_allocator
             .allocate(stack_size / page_allocator.page_size())
             .context(MemorySnafu)?
+            .byte_add(stack_size)
             .into();
 
         debug!(
@@ -228,7 +229,7 @@ mod tests {
                 .with(
                     eq(i),
                     function(move |x: &PhysicalAddress| usize::from(*x) == epa),
-                    eq(0xee_0000),
+                    eq(0xffff_0000_00ee_0000usize + 4 * 1024 * 1024),
                 )
                 .returning(|_, _, _| Ok(()));
         }
