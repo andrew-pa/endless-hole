@@ -20,6 +20,9 @@ pub static CONTROLLER: Once<Box<dyn InterruptController + Send + Sync>> = Once::
 /// The global instance of the system timer interface.
 pub static TIMER: Once<Timer> = Once::new();
 
+/// The length of the timer interval in `1/seconds`.
+pub const TIMER_INTERVAL: u32 = 10;
+
 /// Initialize the interrupt controller and interrupt handler.
 pub fn init(device_tree: &DeviceTree<'_>) {
     trace!("Initializing interrupts…");
@@ -47,7 +50,8 @@ pub fn init(device_tree: &DeviceTree<'_>) {
         .expect("have timer node");
 
     let timer = TIMER.call_once(|| {
-        Timer::in_device_tree(timer_node, controller.as_ref(), 10).expect("configure system timer")
+        Timer::in_device_tree(timer_node, controller.as_ref(), TIMER_INTERVAL)
+            .expect("configure system timer")
     });
 
     HANDLER_POLICY.call_once(|| Handler::new(controller.as_ref(), timer));
