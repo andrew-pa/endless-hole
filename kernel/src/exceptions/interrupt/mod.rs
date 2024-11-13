@@ -17,6 +17,7 @@ pub static HANDLER_POLICY: Once<Handler<'static, 'static, Timer>> = Once::new();
 /// The current interrupt controller device in the system.
 pub static CONTROLLER: Once<Box<dyn InterruptController + Send + Sync>> = Once::new();
 
+/// The global instance of the system timer interface.
 pub static TIMER: Once<Timer> = Once::new();
 
 /// Initialize the interrupt controller and interrupt handler.
@@ -56,6 +57,7 @@ pub fn init(device_tree: &DeviceTree<'_>) {
     info!("Interrupts initialized!");
 }
 
+/// Perform initialization for interrupts that needs to happen for each core on the system.
 pub fn init_for_core() {
     let ctrl = CONTROLLER.get().unwrap();
     ctrl.initialize_for_core();

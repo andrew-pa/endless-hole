@@ -25,20 +25,6 @@ use kernel_core::{
 use log::{debug, info};
 use memory::page_allocator;
 
-extern "C" {
-    /// Defined in `start.S`.
-    pub fn _secondary_core_start();
-}
-
-fn init_smp(device_tree: &DeviceTree) {
-    let power = psci::Psci::in_device_tree(device_tree).expect("get PSCI info from device tree");
-
-    let entry_point_address = PhysicalAddress::from(_secondary_core_start as *mut ());
-
-    boot_all_cores(device_tree, &power, entry_point_address, page_allocator())
-        .expect("boot all cores on board");
-}
-
 /// The main entry point for the kernel.
 ///
 /// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
@@ -75,9 +61,24 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     }
 }
 
+extern "C" {
+    /// The true entry point for non-boot cores. Defined in `start.S`.
+    pub fn _secondary_core_start();
+}
+
+/// Initialize power control interface and boot the rest of the cores in the system.
+fn init_smp(device_tree: &DeviceTree) {
+    let power = psci::Psci::in_device_tree(device_tree).expect("get PSCI info from device tree");
+
+    let entry_point_address = PhysicalAddress::from(_secondary_core_start as *mut ());
+
+    boot_all_cores(device_tree, &power, entry_point_address, page_allocator())
+        .expect("boot all cores on board");
+}
+
 /// The main entry point for secondary cores in an SMP system.
 ///
-/// This function is called by `start.S` after it sets up virtual memory, the stack, etc.
+/// This function is called by `start.S:_secondary_core_start` after it sets up virtual memory, the stack, etc.
 #[no_mangle]
 pub extern "C" fn secondary_core_kmain() -> ! {
     unsafe {

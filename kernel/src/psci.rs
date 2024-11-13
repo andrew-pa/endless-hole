@@ -13,6 +13,7 @@ use kernel_core::platform::device_tree::{
 use log::{error, trace, warn};
 use snafu::OptionExt;
 
+/// Convert a PSCI return value to a Rust [`Result`].
 fn psci_error_code_to_result(result: i32) -> Result<(), PowerManagerError> {
     // Error codes as defined by §5.2.2.
     match result {
@@ -44,7 +45,7 @@ enum CallingMethod {
 /// Function ID for `CPU_ON` PSCI function.
 const FUNC_ID_CPU_ON: u32 = 0xC400_0003;
 
-/// The PSCI interface.
+/// The PSCI driver.
 #[derive(Debug)]
 pub struct Psci {
     /// The calling method reported by the firmware.

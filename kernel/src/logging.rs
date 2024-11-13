@@ -1,3 +1,4 @@
+//! Kernel logging mechanism.
 use log::{debug, info};
 use spin::once::Once;
 
@@ -8,6 +9,7 @@ use kernel_core::{
 
 use crate::uart;
 
+/// Implementation of [`GlobalValueReader`] that reads the real system registers.
 struct SystemGlobalValueReader;
 
 impl GlobalValueReader for SystemGlobalValueReader {
@@ -27,6 +29,7 @@ impl GlobalValueReader for SystemGlobalValueReader {
     }
 }
 
+/// The global kernel logger instance.
 static LOGGER: Once<Logger<uart::PL011, SystemGlobalValueReader>> = Once::new();
 
 /// Initialize the kernel global logger.
