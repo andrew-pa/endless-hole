@@ -18,6 +18,9 @@
 use core::{marker::PhantomData, num::NonZeroUsize};
 use snafu::Snafu;
 
+#[cfg(test)]
+use mockall::automock;
+
 mod buddy;
 pub use buddy::BuddyPageAllocator;
 
@@ -347,10 +350,19 @@ impl core::ops::Mul<PageSize> for usize {
     }
 }
 
+impl core::ops::Div<PageSize> for usize {
+    type Output = usize;
+
+    fn div(self, rhs: PageSize) -> Self::Output {
+        self / usize::from(rhs)
+    }
+}
+
 /// A memory allocator that provides pages of physical memory.
 ///
 /// Implementers of this trait must provide internal synchronization and each associated function
 /// should be re-entrant.
+#[cfg_attr(test, automock)]
 pub trait PageAllocator {
     /// The size of one page in this allocator.
     ///
@@ -398,7 +410,8 @@ pub trait MemoryManagmentUnit {
 }
 
 #[cfg(test)]
-mod tests {
+/// Tests for memory module.
+pub mod tests {
     use snafu::{ensure, OptionExt};
 
     use crate::memory::{InvalidSizeSnafu, OutOfMemorySnafu, PhysicalPointer, UnknownPtrSnafu};
@@ -733,6 +746,7 @@ mod tests {
             }
         }
 
+        /// Check to make sure everything was freed at the end of a test.
         pub fn end_check(self) {
             assert!(self.allocated_pages.lock().unwrap().is_empty());
             assert_eq!(*self.total_allocated.lock().unwrap(), 0);

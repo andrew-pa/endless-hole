@@ -17,7 +17,11 @@ pub static HANDLER_POLICY: Once<Handler<'static, 'static, Timer>> = Once::new();
 /// The current interrupt controller device in the system.
 pub static CONTROLLER: Once<Box<dyn InterruptController + Send + Sync>> = Once::new();
 
+/// The global instance of the system timer interface.
 pub static TIMER: Once<Timer> = Once::new();
+
+/// The length of the timer interval in `1/seconds`.
+pub const TIMER_INTERVAL: u32 = 10;
 
 /// Initialize the interrupt controller and interrupt handler.
 pub fn init(device_tree: &DeviceTree<'_>) {
@@ -40,21 +44,28 @@ pub fn init(device_tree: &DeviceTree<'_>) {
     });
 
     controller.global_initialize();
-    controller.initialize_for_core();
 
     let timer_node = device_tree
         .iter_node_properties(b"/timer")
         .expect("have timer node");
 
     let timer = TIMER.call_once(|| {
-        Timer::in_device_tree(timer_node, controller.as_ref(), 10).expect("configure system timer")
+        Timer::in_device_tree(timer_node, controller.as_ref(), TIMER_INTERVAL)
+            .expect("configure system timer")
     });
 
     HANDLER_POLICY.call_once(|| Handler::new(controller.as_ref(), timer));
 
-    Timer::start_for_core();
+    init_for_core();
 
     info!("Interrupts initialized!");
+}
+
+/// Perform initialization for interrupts that needs to happen for each core on the system.
+pub fn init_for_core() {
+    let ctrl = CONTROLLER.get().unwrap();
+    ctrl.initialize_for_core();
+    TIMER.get().unwrap().start_for_core(ctrl.as_ref());
 }
 
 /// Wait for an interrupt to occur, pausing execution.

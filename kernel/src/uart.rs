@@ -32,13 +32,6 @@ impl PL011 {
             base_address: r.into(),
         })
     }
-
-    /// Create a UART for debugging purposes that will probably work but requires no configuration.
-    pub unsafe fn from_platform_debug_best_guess() -> Self {
-        PL011 {
-            base_address: 0xffff_0000_0900_0000 as *mut u8,
-        }
-    }
 }
 
 impl Write for PL011 {

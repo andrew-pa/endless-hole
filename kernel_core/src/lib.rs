@@ -13,6 +13,8 @@
 #[macro_use]
 extern crate std;
 
+extern crate alloc;
+
 pub mod exceptions;
 pub mod logger;
 pub mod memory;

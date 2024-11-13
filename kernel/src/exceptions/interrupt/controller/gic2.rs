@@ -160,7 +160,7 @@ impl Controller for GenericV2 {
         let dist_base = self.distributor_base.lock();
         debug!("Initializing GICv2 Distributor @ {:x?}", dist_base);
         unsafe {
-            dist_base.add(dist_regs::CTLR).write_volatile(0x1);
+            dist_base.add(dist_regs::CTLR).write_volatile(0b11);
         }
     }
 
@@ -171,13 +171,14 @@ impl Controller for GenericV2 {
             // bit 0: enable group 1 interrupts
             self.cpu_base
                 .add(cpu_regs::CTLR)
-                .write_volatile(0b0000_0000_0000_0001);
+                .write_volatile(0b0000_0000_0000_0011);
 
             // Set minimum priority to lowest possible.
             self.cpu_base.add(cpu_regs::PMR).write_volatile(0xff);
 
             // Disable group priority bits.
-            self.cpu_base.add(cpu_regs::BPR).write_volatile(0x00);
+            // TODO: Why was this necessary?
+            // self.cpu_base.add(cpu_regs::BPR).write_volatile(0x00);
         }
     }
 
@@ -258,13 +259,11 @@ impl Controller for GenericV2 {
         if id == INTID_NONE_PENDING {
             None
         } else {
-            trace!("ack interrupt {id}");
             Some(id)
         }
     }
 
     fn finish_interrupt(&self, id: Id) {
-        trace!("finish interrupt {id}");
         unsafe {
             self.cpu_base.add(cpu_regs::EOIR).write_volatile(id);
         }
