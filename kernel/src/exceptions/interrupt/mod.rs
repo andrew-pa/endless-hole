@@ -57,8 +57,9 @@ pub fn init(device_tree: &DeviceTree<'_>) {
 }
 
 pub fn init_for_core() {
-    CONTROLLER.get().unwrap().initialize_for_core();
-    Timer::start_for_core();
+    let ctrl = CONTROLLER.get().unwrap();
+    ctrl.initialize_for_core();
+    TIMER.get().unwrap().start_for_core(ctrl.as_ref());
 }
 
 /// Wait for an interrupt to occur, pausing execution.

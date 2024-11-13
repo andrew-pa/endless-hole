@@ -64,6 +64,9 @@ impl TimerControlRegister {
 /// A list of device tree `compatible` strings (see section 2.3.1 of the spec) that this driver is compatible with.
 const COMPATIBLE: &[&[u8]] = &[b"arm,armv7-timer", b"arm,armv8-timer"];
 
+/// The system timer interface.
+///
+/// This interface is implicitly per-CPU, so it does not need to be synchronized.
 #[derive(Debug)]
 pub struct Timer {
     int_id: InterruptId,
@@ -126,14 +129,13 @@ impl Timer {
         debug!("configured system timer: {s:?}");
 
         intc.configure(id, &s.int_config);
-        intc.enable(id);
 
         Ok(s)
     }
 
     // NOTE: you've gotta call this for every CPU because the timer itself is per-CPU
     // this is kinda strange, b/c it should really be in the mech trait
-    pub fn start_for_core() {
+    pub fn start_for_core(&self, intc: &dyn InterruptController) {
         let mut ctl = TimerControlRegister::read();
         ctl.set_enable(true);
         ctl.set_imask(false);
@@ -141,6 +143,7 @@ impl Timer {
             ctl.write();
             write_timer_value(0);
         }
+        intc.enable(self.int_id);
         trace!("system timer started");
     }
 }

@@ -105,12 +105,15 @@ pub extern "C" fn secondary_core_kmain() -> ! {
 #[cfg(not(test))]
 pub fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     // TODO: somehow make sure that if one core panics, they all halt. Probably via SGI?
-    use core::fmt::Write;
+
+    log::error!("{info}");
+
+    /*use core::fmt::Write;
     unsafe {
         let mut uart = uart::PL011::from_platform_debug_best_guess();
 
         writeln!(&mut uart, "\x1b[31mpanic!\x1b[0m {info}").unwrap();
-    }
+    }*/
 
     #[allow(clippy::empty_loop)]
     loop {}
