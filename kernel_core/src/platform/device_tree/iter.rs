@@ -61,7 +61,7 @@ impl<'dt> Iterator for FlattenedTreeIter<'dt> {
             )) {
                 fdt::TokenType::BeginNode => {
                     let mut name_end = self.current_offset;
-                    while self.dt.structure.get(name_end).map_or(false, |b| *b != 0) {
+                    while self.dt.structure.get(name_end).is_some_and(|b| *b != 0) {
                         name_end += 1;
                     }
                     let name = &self.dt.structure[self.current_offset..name_end];
@@ -77,7 +77,7 @@ impl<'dt> Iterator for FlattenedTreeIter<'dt> {
                         BigEndian::read_u32(&self.dt.structure[self.current_offset..]) as usize;
                     self.current_offset += 4;
                     let mut name_end = name_offset;
-                    while self.dt.strings.get(name_end).map_or(false, |b| *b != 0) {
+                    while self.dt.strings.get(name_end).is_some_and(|b| *b != 0) {
                         name_end += 1;
                     }
                     let name = &self.dt.strings[name_offset..name_end];
