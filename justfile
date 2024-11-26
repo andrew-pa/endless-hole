@@ -48,7 +48,7 @@ make-kernel-image kernel_elf_path=(binary_path / "kernel") mkimage_args="": buil
     fi
     flat_binary_path=$(mktemp -t kernel.XXXXXX.img)
     {{target_prefix}}objcopy -O binary {{kernel_elf_path}} $flat_binary_path
-    {{mkimage_bin}} -A arm64 -O linux -T kernel -C none -a {{kernel_load_addr}} -e {{kernel_load_addr}} -n "endless-hole-kernel" -d $flat_binary_path {{mkimage_args}} {{img_dir / "kernel.img"}}
+    {{mkimage_bin}} -A arm64 -O linux -T kernel -C none -a {{kernel_load_addr}} -e {{kernel_load_addr}} -n "cavern-kernel" -d $flat_binary_path {{mkimage_args}} {{img_dir / "kernel.img"}}
     rm $flat_binary_path
 
 # Run the system in QEMU.

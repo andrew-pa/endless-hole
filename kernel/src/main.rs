@@ -1,4 +1,4 @@
-//! The Endless Hole microkernel. See `spec/kernel.md` for the specification.
+//! The Cavern microkernel. See `spec/kernel.md` for the specification.
 //!
 //! This binary is the actual kernel, containing the entry point and implementing the mechanisms
 //! necessary for executing the policies defined in [`kernel_core`].

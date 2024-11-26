@@ -1,4 +1,4 @@
-//! The Endless Hole microkernel. See `spec/kernel.md` for the specification.
+//! The Cavern microkernel. See `spec/kernel.md` for the specification.
 //!
 //! This crate contains definitions for data structures, algorithms and policies that are used in the kernel proper.
 //! This crate is broken out primarily so that these definitions can be unit tested using

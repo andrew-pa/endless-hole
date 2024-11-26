@@ -1,5 +1,5 @@
 <center>
-# **Endless Hole: Interrupt Handler Virtual Machine** #
+# **Cavern: Interrupt Handler Virtual Machine** #
 </center>
 
 This document describes the virtual machine that executes interrupt handler programs on the behalf of drivers in the system.
