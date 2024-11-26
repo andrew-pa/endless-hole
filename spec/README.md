@@ -1,11 +1,11 @@
-# Endless Hole: Building a modern operating system for no good reason
-This spec attempts to describe the design of the Endless Hole.
+# Cavern: Building a modern operating system for no good reason
+This spec attempts to describe the design of the Cavern.
 This document describes the abstract goals for the project.
-The overall goal of the Endless Hole project is to build an operating system for fun.
+The overall goal of the Cavern project is to build an operating system for fun.
 Fun is the most important aspect, because this is a hobby project.
 Ideally, it is also educational to some degree.
 
-The name "Endless Hole" is inspired by hobby tunneling, in which people dig tunnels for no reason but the pure enjoyment of digging.
+The name "Cavern" is inspired by hobby tunneling, in which people dig tunnels for no reason but the pure enjoyment of digging.
 Like digging a tunnel, building an OS is hard work with lots of stressful decisions and trade-offs, but with the right mindset it can be enjoyable for the committed.
 
 ## Tools
@@ -13,7 +13,7 @@ Like digging a tunnel, building an OS is hard work with lots of stressful decisi
 - [U-boot (bootloader)](https://source.denx.de/u-boot/u-boot)
 
 ## Architectural Requirements
-The architecture of Endless Hole needs to be foremost hackable, maintainable, robust and extensible.
+The architecture of Cavern needs to be foremost hackable, maintainable, robust and extensible.
 
 - **Hackability**
 

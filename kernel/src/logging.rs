@@ -47,7 +47,7 @@ pub fn init_logging(device_tree: &DeviceTree) {
     log::set_logger(LOGGER.call_once(|| Logger::new(uart, log::LevelFilter::max())) as _).unwrap();
 
     info!(
-        "\x1b[1mEndless Hole 🕳️\x1b[0m v{} (git: {}@{})",
+        "\x1b[1mCavern 🕳️\x1b[0m v{} (git: {}@{})",
         env!("CARGO_PKG_VERSION"),
         env!("VERGEN_GIT_BRANCH"),
         env!("VERGEN_GIT_SHA"),

@@ -1,8 +1,8 @@
 <center>
-# **Endless Hole: Kernel** #
+# **Cavern: Kernel** #
 </center>
 
-This document describes the Endless Hole microkernel.
+This document describes the Cavern microkernel.
 
 The kernel is responsible for managing the most fundamental system mechanisms: time and space, or in other words: thread scheduling and memory mapping/allocation.
 In addition, the kernel provides a mechanism for processes in the system to communicate with each other through messages and shared memory.
