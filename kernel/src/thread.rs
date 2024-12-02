@@ -1,17 +1,44 @@
 //! Thread switching mechanism.
 
 use kernel_core::{
+    collections::HandleMap,
     memory::VirtualAddress,
-    process::thread::{scheduler::RoundRobinScheduler, Registers, SavedProgramStatus, Scheduler},
+    platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
+    process::thread::{
+        scheduler::RoundRobinScheduler, Registers, SavedProgramStatus, Scheduler, Thread,
+        MAX_THREAD_ID,
+    },
 };
 use spin::once::Once;
 
-pub type PlatformScheduler = RoundRobinScheduler;
+/// Implementation of [`CpuIdReader`] that reads the real system registers.
+struct SystemCpuIdReader;
+
+impl CpuIdReader for SystemCpuIdReader {
+    fn current_cpu() -> CpuId {
+        let mut core_id: usize;
+        unsafe {
+            core::arch::asm!(
+                "mrs {core_id}, MPIDR_EL1",
+                core_id = out(reg) core_id
+            );
+        }
+        // clear multiprocessor flag bit in MPIDR register
+        core_id & !0x8000_0000
+    }
+}
+
+pub type PlatformScheduler = RoundRobinScheduler<SystemCpuIdReader>;
 
 pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
+pub static THREADS: Once<HandleMap<Thread>> = Once::new();
 
-pub fn init() {
-    SCHEDULER.call_once(|| PlatformScheduler::new());
+pub fn init(cores: &[CoreInfo]) {
+    let threads = THREADS.call_once(|| HandleMap::new(MAX_THREAD_ID));
+
+    SCHEDULER.call_once(|| {
+        PlatformScheduler::new(cores.iter().map(|info| (info.id, todo!())).collect())
+    });
 }
 
 /// Read the current value of the `SPSR_EL1` register.
@@ -85,14 +112,14 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
         .get()
         .expect("scheduler init before thread switch")
         .current_thread();
-    let mut exec_state = current_thread
-        .execution_state
+    let mut s = current_thread
+        .processor_state
         .try_lock()
         .expect("no locks on current thread's execution state");
-    exec_state.spsr = read_saved_program_status();
-    exec_state.program_counter = read_exception_link_reg();
-    exec_state.stack_pointer = read_stack_pointer(0);
-    exec_state.registers = *registers;
+    s.spsr = read_saved_program_status();
+    s.program_counter = read_exception_link_reg();
+    s.stack_pointer = read_stack_pointer(0);
+    s.registers = *registers;
 }
 
 pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
@@ -100,12 +127,12 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
         .get()
         .expect("scheduler init before thread switch")
         .current_thread();
-    let exec_state = current_thread
-        .execution_state
+    let s = current_thread
+        .processor_state
         .try_lock()
         .expect("no locks on current thread's execution state");
-    *registers = exec_state.registers;
-    write_stack_pointer(0, exec_state.stack_pointer);
-    write_exception_link_reg(exec_state.program_counter);
-    write_saved_program_status(&exec_state.spsr);
+    *registers = s.registers;
+    write_stack_pointer(0, s.stack_pointer);
+    write_exception_link_reg(s.program_counter);
+    write_saved_program_status(&s.spsr);
 }

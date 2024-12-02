@@ -14,6 +14,12 @@ use crate::{
 /// A unique identifier for a single CPU core.
 pub type Id = usize;
 
+/// Fetches the current CPU [`Id`].
+pub trait CpuIdReader: Sync {
+    /// The current CPU [`Id`] that is executing.
+    fn current_cpu() -> Id;
+}
+
 /// Errors that occur due to power management operations.
 #[derive(Debug, Snafu)]
 pub enum PowerManagerError {
@@ -56,12 +62,6 @@ pub trait PowerManager {
 /// Errors that can occur during SMP bring-up.
 #[derive(Debug, Snafu)]
 pub enum BootAllCoresError {
-    /// Error parsing device tree information about CPUs.
-    #[snafu(display("Parsing device tree: {cause}"))]
-    DeviceTree {
-        /// Cause of the error from the device tree.
-        cause: OwnedParseError,
-    },
     /// An "enable-method" was given that is unsupported.
     #[snafu(display("Unsupported CPU enable method: {method}"))]
     UnsupportedEnableMethod {
@@ -80,83 +80,95 @@ pub enum BootAllCoresError {
     },
 }
 
-/// Power on all cores as described by the device tree, and allocates stacks for them.
+use alloc::vec::Vec;
+
+/// Information about a core from the device tree.
+pub struct CoreInfo<'dt> {
+    /// The CPU ID of the core.
+    pub id: Id,
+    /// The method required to enable the core at boot.
+    pub enable_method: &'dt [u8],
+}
+
+/// List all CPU cores in the system as described by the device tree.
 ///
 /// # Errors
-/// Errors can come from parsing the device tree, finding an unsupported enable method, the power
-/// management interface, or the memory allocator.
-/// See [`BootAllCoresError`] for details.
-pub fn boot_all_cores<PM: PowerManager>(
-    device_tree: &DeviceTree,
-    power: &PM,
-    entry_point_address: PhysicalAddress,
-    page_allocator: &impl PageAllocator,
-) -> Result<(), BootAllCoresError> {
+/// Returns a device tree parse error if the device tree has missing or invalid information.
+pub fn list_cores<'a, 'dt: 'a>(
+    device_tree: &'dt DeviceTree<'a>,
+) -> Result<Vec<CoreInfo<'a>>, OwnedParseError> {
     let cpu_nodes = device_tree
         .iter_nodes_named(b"/cpus", b"cpu")
-        .context(NodeNotFoundSnafu {
-            path: "/cpus/cpu@*",
-        })
-        .map_err(|s| BootAllCoresError::DeviceTree {
-            cause: s.to_owned(),
-        })?;
+        .context(NodeNotFoundSnafu { path: "/cpus/cpu*" })
+        .map_err(|s| s.to_owned())?;
 
-    let mut successful = 0;
+    let mut cpus = Vec::new();
 
     for cpu_node in cpu_nodes {
         let mut cpu_id = None;
+        let mut enable_method = None;
 
         for (name, value) in cpu_node.properties {
             match name {
                 b"enable-method" => {
-                    let enable_method =
-                        value
-                            .as_bytes(name)
-                            .map_err(|s| BootAllCoresError::DeviceTree {
-                                cause: s.to_owned(),
-                            })?;
-
-                    ensure!(
-                        enable_method == PM::enable_method_name(),
-                        UnsupportedEnableMethodSnafu {
-                            method: core::str::from_utf8(enable_method).unwrap_or("unknown")
-                        }
-                    );
+                    enable_method = Some(value.as_bytes(name).map_err(|s| s.to_owned())?);
                 }
                 b"reg" => {
-                    let ids = value
-                        .as_reg(name)
-                        .map_err(|s| BootAllCoresError::DeviceTree {
-                            cause: s.to_owned(),
-                        })?;
+                    let ids = value.as_reg(name).map_err(|s| s.to_owned())?;
                     let id = ids
                         .iter()
                         .next()
-                        .with_context(|| UnexpectedValueSnafu {
-                            name,
-                            value: value.clone(),
-                            reason: "reg (CPU id) should have at least one element",
-                        })
                         .map(|(a, _)| a)
-                        .map_err(|s| BootAllCoresError::DeviceTree {
-                            cause: s.to_owned(),
-                        })?;
+                        .ok_or_else(|| OwnedParseError::PropertyNotFound { name: "reg" })?;
                     cpu_id = Some(id);
                 }
                 _ => {}
             }
         }
 
-        let cpu_id = cpu_id.context(DeviceTreeSnafu {
-            cause: OwnedParseError::PropertyNotFound { name: "reg" },
+        let cpu_id = cpu_id.ok_or_else(|| OwnedParseError::PropertyNotFound { name: "reg" })?;
+        let enable_method = enable_method.ok_or_else(|| OwnedParseError::PropertyNotFound {
+            name: "enable-method",
         })?;
+        cpus.push(CoreInfo {
+            id: cpu_id,
+            enable_method,
+        });
+    }
 
-        if cpu_id == 0 {
-            // skip the boot cpu
+    assert!(!cpus.is_empty());
+
+    Ok(cpus)
+}
+
+/// Power on all cores and allocates stacks for them.
+/// The `cores` slice is a list of `(CPU id, enable method)` pairs, as returned by [`list_cores()`].
+///
+/// # Errors
+/// Errors can come from parsing the device tree, finding an unsupported enable method, the power
+/// management interface, or the memory allocator.
+/// See [`BootAllCoresError`] for details.
+pub fn boot_all_cores<PM: PowerManager>(
+    cores: &[CoreInfo],
+    power: &PM,
+    entry_point_address: PhysicalAddress,
+    page_allocator: &impl PageAllocator,
+) -> Result<(), BootAllCoresError> {
+    let mut successful = 0;
+
+    for CoreInfo { id, enable_method } in cores {
+        ensure!(
+            *enable_method == PM::enable_method_name(),
+            UnsupportedEnableMethodSnafu {
+                method: core::str::from_utf8(enable_method).unwrap_or("unknown")
+            }
+        );
+
+        if *id == 0 {
+            // this is the boot CPU that is currently running, it doesn't need to be started.
             continue;
         }
 
-        // allocate a new 4MiB stack for the core kernel thread.
         let stack_size = 4 * 1024 * 1024;
         let stack: VirtualAddress = page_allocator
             .allocate(stack_size / page_allocator.page_size())
@@ -164,24 +176,18 @@ pub fn boot_all_cores<PM: PowerManager>(
             .byte_add(stack_size)
             .into();
 
-        debug!(
-            "starting cpu@{}, id=0x{cpu_id:x}, stack@{stack:?}",
-            cpu_node
-                .unit_address
-                .and_then(|s| core::str::from_utf8(s).ok())
-                .unwrap_or("?")
-        );
+        debug!("starting cpu@{id:x}, stack@{stack:?}");
 
         unsafe {
             power
-                .start_core(cpu_id, entry_point_address, stack.into())
+                .start_core(*id, entry_point_address, stack.into())
                 .context(PowerSnafu)?;
         }
 
         successful += 1;
     }
 
-    info!("Started {successful} SMP cores!");
+    info!("Started {successful} of {} SMP cores!", cores.len());
 
     Ok(())
 }

@@ -1,5 +1,8 @@
 //! Threads
+use core::sync::atomic::AtomicU64;
+
 use alloc::sync::Arc;
+use bytemuck::Contiguous;
 #[cfg(test)]
 use mockall::automock;
 use spin::Mutex;
@@ -7,6 +10,11 @@ use spin::Mutex;
 use crate::memory::VirtualAddress;
 
 pub mod scheduler;
+
+/// An unique ID for a thread.
+pub type Id = u32;
+/// The largest possible thread ID in the system.
+pub const MAX_THREAD_ID: u32 = 0xffff;
 
 bitfield::bitfield! {
     /// The value of the SPSR (Saved Program Status) register.
@@ -84,8 +92,8 @@ pub struct Registers {
     pub x: [usize; 31],
 }
 
-/// Execution state of a thread.
-pub struct ExecutionState {
+/// Processor state of a thread.
+pub struct ProcessorState {
     /// The current program status register value.
     pub spsr: SavedProgramStatus,
     /// The current program counter.
@@ -96,10 +104,52 @@ pub struct ExecutionState {
     pub registers: Registers,
 }
 
+/// Execution state of a thread.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Contiguous)]
+pub enum State {
+    /// Thread is currently executing or could currently execute.
+    Running,
+    /// Thread is blocked.
+    Blocked,
+}
+
+impl From<u8> for State {
+    fn from(value: u8) -> Self {
+        State::from_integer(value).expect("valid thread state")
+    }
+}
+
+impl From<State> for u8 {
+    fn from(value: State) -> Self {
+        value.into_integer()
+    }
+}
+
+bitfield::bitfield! {
+    struct ThreadProperties(u64);
+    impl Debug;
+    u8, from into State, state, set_state: 0, 8;
+}
+
 /// A single thread of execution in a user-space process.
 pub struct Thread {
-    /// The current program state of the thread.
-    pub execution_state: Mutex<ExecutionState>,
+    /// The unique id for this thread.
+    pub id: Id,
+
+    /// Thread status, etc
+    properties: AtomicU64,
+
+    /// The current processor state of the thread.
+    pub processor_state: Mutex<ProcessorState>,
+}
+
+impl Thread {
+    /// Load current thread state.
+    pub fn state(&self) -> State {
+        let props = ThreadProperties(self.properties.load(core::sync::atomic::Ordering::Acquire));
+        props.state()
+    }
 }
 
 /// Abstract scheduler policy
@@ -108,7 +158,6 @@ pub trait Scheduler: Sync {
     /// Get the currently running thread.
     fn current_thread(&self) -> Arc<Thread>;
 
-    /// Update the thread scheduler for a new time slice,
-    /// potentially updating the currently running thread.
+    /// Update the scheduler for a new time slice, potentially scheduling a new current thread.
     fn next_time_slice(&self);
 }

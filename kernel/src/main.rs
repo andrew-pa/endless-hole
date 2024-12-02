@@ -21,7 +21,10 @@ mod uart;
 
 use kernel_core::{
     memory::{PhysicalAddress, PhysicalPointer},
-    platform::{cpu::boot_all_cores, device_tree::DeviceTree},
+    platform::{
+        cpu::{boot_all_cores, list_cores, CoreInfo},
+        device_tree::DeviceTree,
+    },
 };
 use log::{debug, info};
 use memory::page_allocator;
@@ -47,10 +50,15 @@ pub extern "C" fn kmain(device_tree_blob: PhysicalPointer<u8>) -> ! {
     logging::init_logging(&device_tree);
 
     memory::init(&device_tree);
-    thread::init();
+
+    let cores = list_cores(&device_tree).expect("list cores in system");
+    debug!("System has {} cores", cores.len());
+
+    thread::init(&cores);
+
     exceptions::init_interrupts(&device_tree);
 
-    init_smp(&device_tree);
+    init_smp(&device_tree, &cores);
 
     info!("Boot succesful!");
 
@@ -69,12 +77,12 @@ extern "C" {
 }
 
 /// Initialize power control interface and boot the rest of the cores in the system.
-fn init_smp(device_tree: &DeviceTree) {
+fn init_smp(device_tree: &DeviceTree, cores: &[CoreInfo]) {
     let power = psci::Psci::in_device_tree(device_tree).expect("get PSCI info from device tree");
 
     let entry_point_address = PhysicalAddress::from(_secondary_core_start as *mut ());
 
-    boot_all_cores(device_tree, &power, entry_point_address, page_allocator())
+    boot_all_cores(cores, &power, entry_point_address, page_allocator())
         .expect("boot all cores on board");
 }
 
