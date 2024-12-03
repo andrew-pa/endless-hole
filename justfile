@@ -52,7 +52,7 @@ make-kernel-image kernel_elf_path=(binary_path / "kernel") mkimage_args="": buil
     rm $flat_binary_path
 
 # Run the system in QEMU.
-run-qemu qemu_args="" boot_args="{}": make-kernel-image
+run-qemu qemu_args="-m 4G -smp 8" boot_args="{}": make-kernel-image
     #!/bin/sh
     set -euxo pipefail
     qemu-system-aarch64 \
@@ -68,6 +68,10 @@ run-qemu qemu_args="" boot_args="{}": make-kernel-image
         env set bootargs '{{boot_args}}'
         bootm 41000000 - 40000000
     END
+
+# Create an `asciinema` recording of booting the system in QEMU.
+create-boot-video output_file="/tmp/bootvideo.cast" asciinema_args="--cols 160 --rows 40 --idle-time-limit 1" qemu_args="-m 4G -smp 8" boot_args="{}":
+    asciinema rec --command='just run-qemu "{{qemu_args}}" "{{boot_args}}"' --title="cavern_boot@{{`git rev-parse --short=8 HEAD`}}" --overwrite {{asciinema_args}} {{output_file}}
 
 make_bin := `which make`
 
