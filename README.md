@@ -1,8 +1,9 @@
 # 🕳Cavern🕳
-The Cavern project aims to build an operating system for fun.
-Fun is the most important aspect, because this is a hobby project.
-Ideally, it is also educational and enjoyable to some degree.
-We make no guarantees about the usability of this software for anything worthwhile.
-
+The Cavern project aims to build an operating system, mostly for entertainment.
 The name "Cavern" is inspired by [hobby tunneling](https://en.wikipedia.org/wiki/Hobby_tunneling), in which people dig tunnels for no reason but the pure enjoyment of digging.
-Like digging a tunnel, building an OS is hard work with lots of stressful decisions and tradeoffs, but with the right mindset it can be enjoyable for the committed.
+Like digging a tunnel, building an OS is hard work with lots of stressful decisions and trade-offs, but with the right mindset it can be enjoyable for the committed.
+
+Cavern follows a microkernel architecture, using message passing and kernel-managed direct memory transfers to communicate between processes. Check out the specification [for the system](./spec/README.md) and [for the kernel](./spec/kernel.md) for more details.
+
+Here's what it currently looks like to boot (slowed down significantly for readability):
+[![Video of Cavern Booting Up](./boot-video.gif)](https://asciinema.org/a/D2q3J76V2PqmfgXUpIEJ1UnW5)
