@@ -15,7 +15,7 @@ pub struct ArcSwap<T> {
 impl<T> ArcSwap<T> {
     /// Creates a new `ArcSwap` instance holding the given `Arc<T>`.
     pub fn new(data: Arc<T>) -> Self {
-        let ptr = Arc::into_raw(data) as *mut T;
+        let ptr = Arc::into_raw(data).cast_mut();
         Self {
             ptr: AtomicPtr::new(ptr),
         }
@@ -36,7 +36,7 @@ impl<T> ArcSwap<T> {
 
     /// Atomically swaps the current value with a new `Arc<T>`, returning the old `Arc<T>`.
     pub fn swap(&self, new: Arc<T>) -> Arc<T> {
-        let new_ptr = Arc::into_raw(new) as *mut T;
+        let new_ptr = Arc::into_raw(new).cast_mut();
         let old_ptr = self.ptr.swap(new_ptr, Ordering::AcqRel);
         // SAFETY: The old pointer was obtained from Arc::into_raw, so it's safe to create an Arc.
         unsafe { Arc::from_raw(old_ptr) }

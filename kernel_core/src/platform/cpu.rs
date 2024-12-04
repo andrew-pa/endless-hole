@@ -100,7 +100,7 @@ pub fn list_cores<'a, 'dt: 'a>(
     let cpu_nodes = device_tree
         .iter_nodes_named(b"/cpus", b"cpu")
         .context(NodeNotFoundSnafu { path: "/cpus/cpu*" })
-        .map_err(|s| s.to_owned())?;
+        .map_err(super::device_tree::ParseError::to_owned)?;
 
     let mut cpus = Vec::new();
 
@@ -111,23 +111,29 @@ pub fn list_cores<'a, 'dt: 'a>(
         for (name, value) in cpu_node.properties {
             match name {
                 b"enable-method" => {
-                    enable_method = Some(value.as_bytes(name).map_err(|s| s.to_owned())?);
+                    enable_method = Some(
+                        value
+                            .as_bytes(name)
+                            .map_err(super::device_tree::ParseError::to_owned)?,
+                    );
                 }
                 b"reg" => {
-                    let ids = value.as_reg(name).map_err(|s| s.to_owned())?;
+                    let ids = value
+                        .as_reg(name)
+                        .map_err(super::device_tree::ParseError::to_owned)?;
                     let id = ids
                         .iter()
                         .next()
                         .map(|(a, _)| a)
-                        .ok_or_else(|| OwnedParseError::PropertyNotFound { name: "reg" })?;
+                        .ok_or(OwnedParseError::PropertyNotFound { name: "reg" })?;
                     cpu_id = Some(id);
                 }
                 _ => {}
             }
         }
 
-        let cpu_id = cpu_id.ok_or_else(|| OwnedParseError::PropertyNotFound { name: "reg" })?;
-        let enable_method = enable_method.ok_or_else(|| OwnedParseError::PropertyNotFound {
+        let cpu_id = cpu_id.ok_or(OwnedParseError::PropertyNotFound { name: "reg" })?;
+        let enable_method = enable_method.ok_or(OwnedParseError::PropertyNotFound {
             name: "enable-method",
         })?;
         cpus.push(CoreInfo {
@@ -135,8 +141,6 @@ pub fn list_cores<'a, 'dt: 'a>(
             enable_method,
         });
     }
-
-    assert!(!cpus.is_empty());
 
     Ok(cpus)
 }
@@ -187,7 +191,10 @@ pub fn boot_all_cores<PM: PowerManager>(
         successful += 1;
     }
 
-    info!("Started {successful} of {} SMP cores!", cores.len());
+    info!(
+        "Started {successful} of {} secondary cores!",
+        cores.len() - 1
+    );
 
     Ok(())
 }

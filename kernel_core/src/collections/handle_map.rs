@@ -189,6 +189,9 @@ impl<T> HandleMap<T> {
     ///
     /// # Errors
     /// If there are no handles left, then the value is returned in `Err`.
+    ///
+    /// # Panics
+    /// If internal invariants are violated.
     pub fn insert_self_referential(
         &self,
         make_value: impl FnOnce(Handle) -> Arc<T>,

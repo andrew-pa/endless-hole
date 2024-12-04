@@ -187,7 +187,7 @@ impl<S: LogSink, G: GlobalValueReader, const NUM_CHUNKS_IN_BUFFER: usize>
         // Write formatted data directly into the ring buffer.
         writeln!(
             &mut writer,
-            "\x1b[{}m{:<5} \x1b[90mT{} C{:x}\x1b[0m {}@{}| {}",
+            "\x1b[{}m{:<5} \x1b[90m{} C{:x}\x1b[0m {}@{}| {}",
             color_for_level(record.level()),
             record.level(),
             global_values.timer_counter,

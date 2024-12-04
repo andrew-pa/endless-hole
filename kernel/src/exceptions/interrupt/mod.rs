@@ -3,7 +3,7 @@ use kernel_core::{
     exceptions::{interrupt::Handler, InterruptController},
     platform::device_tree::DeviceTree,
 };
-use log::{info, trace};
+use log::{debug, info};
 use spin::once::Once;
 
 use crate::{
@@ -30,7 +30,7 @@ pub const TIMER_INTERVAL: u32 = 10;
 
 /// Initialize the interrupt controller and interrupt handler.
 pub fn init(device_tree: &DeviceTree<'_>) {
-    trace!("Initializing interrupts…");
+    debug!("Initializing interrupts…");
 
     // TODO: we assume here that the interrupt controller is under `/intc@?`, which is definitely
     // not true in general! We need to either use the `/interrupt-parent` property or the

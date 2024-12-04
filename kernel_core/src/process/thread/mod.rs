@@ -113,6 +113,7 @@ impl ProcessorState {
     /// # Safety
     ///
     /// This should only be used for idle threads.
+    #[must_use]
     pub unsafe fn new_for_idle_thread() -> Self {
         Self {
             spsr: SavedProgramStatus(0),
@@ -126,6 +127,7 @@ impl ProcessorState {
 /// Execution state of a thread.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Contiguous)]
+#[non_exhaustive]
 pub enum State {
     /// Thread is currently executing or could currently execute.
     Running,
@@ -173,6 +175,9 @@ pub struct Thread {
 
 impl Thread {
     /// Create a new Thread.
+    ///
+    /// # Panics
+    /// Panics if there are no thread IDs left.
     pub fn new(
         store: &HandleMap<Thread>,
         initial_state: State,

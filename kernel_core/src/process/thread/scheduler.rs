@@ -4,7 +4,7 @@ use core::marker::PhantomData;
 use super::{Scheduler, State, Thread};
 use crate::collections::ArcSwap;
 use crate::platform::cpu::{CpuIdReader, Id as CpuId};
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 use crossbeam::queue::SegQueue;
 use hashbrown::HashMap;
 use log::trace;
@@ -23,7 +23,7 @@ impl<C: CpuIdReader> RoundRobinScheduler<C> {
     /// Each idle thread must be distinct, and will run first.
     /// The CPU ids must match those provided by [`CpuIdReader::current_cpu()`] given `C`.
     #[must_use]
-    pub fn new(cpus: Vec<(CpuId, Arc<Thread>)>) -> Self {
+    pub fn new(cpus: &[(CpuId, Arc<Thread>)]) -> Self {
         trace!("Creating RoundRobinScheduler for {} cpus", cpus.len());
         RoundRobinScheduler {
             queues: cpus.iter().map(|(id, _)| (*id, SegQueue::new())).collect(),

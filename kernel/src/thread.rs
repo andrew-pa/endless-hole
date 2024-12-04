@@ -1,6 +1,6 @@
 //! Thread switching mechanism.
 
-use alloc::sync::Arc;
+use alloc::vec::Vec;
 use kernel_core::{
     collections::HandleMap,
     memory::VirtualAddress,
@@ -36,25 +36,23 @@ pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
 pub static THREADS: Once<HandleMap<Thread>> = Once::new();
 
 pub fn init(cores: &[CoreInfo]) {
-    trace!("Initalizing threads...");
+    debug!("Initalizing threads...");
 
     let threads = THREADS.call_once(|| HandleMap::new(MAX_THREAD_ID));
 
     trace!("Creating thread scheduler...");
 
-    SCHEDULER.call_once(|| {
-        PlatformScheduler::new(
-            cores
-                .iter()
-                .map(|info| {
-                    let idle_thread = Thread::new(threads, State::Running, unsafe {
-                        ProcessorState::new_for_idle_thread()
-                    });
-                    (info.id, idle_thread)
-                })
-                .collect(),
-        )
-    });
+    let init_threads: Vec<_> = cores
+        .iter()
+        .map(|info| {
+            let idle_thread = Thread::new(threads, State::Running, unsafe {
+                ProcessorState::new_for_idle_thread()
+            });
+            (info.id, idle_thread)
+        })
+        .collect();
+
+    SCHEDULER.call_once(|| PlatformScheduler::new(&init_threads));
 
     info!("Threads initialized!");
 }
