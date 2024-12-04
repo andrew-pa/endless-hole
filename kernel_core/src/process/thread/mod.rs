@@ -7,7 +7,7 @@ use bytemuck::Contiguous;
 use mockall::automock;
 use spin::Mutex;
 
-use crate::memory::VirtualAddress;
+use crate::{collections::HandleMap, memory::VirtualAddress};
 
 pub mod scheduler;
 
@@ -93,6 +93,7 @@ pub struct Registers {
 }
 
 /// Processor state of a thread.
+#[derive(Debug)]
 pub struct ProcessorState {
     /// The current program status register value.
     pub spsr: SavedProgramStatus,
@@ -102,6 +103,24 @@ pub struct ProcessorState {
     pub stack_pointer: VirtualAddress,
     /// The current value of the `xN` registers.
     pub registers: Registers,
+}
+
+impl ProcessorState {
+    /// Create a zeroed processor state that is valid for the idle thread.
+    /// This is valid because the idle thread will always be saved before it is resumed, capturing
+    /// the current execution state in the kernel.
+    ///
+    /// # Safety
+    ///
+    /// This should only be used for idle threads.
+    pub unsafe fn new_for_idle_thread() -> Self {
+        Self {
+            spsr: SavedProgramStatus(0),
+            program_counter: VirtualAddress::from(0),
+            stack_pointer: VirtualAddress::from(0),
+            registers: Registers::default(),
+        }
+    }
 }
 
 /// Execution state of a thread.
@@ -129,7 +148,15 @@ impl From<State> for u8 {
 bitfield::bitfield! {
     struct ThreadProperties(u64);
     impl Debug;
-    u8, from into State, state, set_state: 0, 8;
+    u8, from into State, state, set_state: 8, 0;
+}
+
+impl ThreadProperties {
+    fn new(state: State) -> Self {
+        let mut s = Self(0);
+        s.set_state(state);
+        s
+    }
 }
 
 /// A single thread of execution in a user-space process.
@@ -145,6 +172,25 @@ pub struct Thread {
 }
 
 impl Thread {
+    /// Create a new Thread.
+    pub fn new(
+        store: &HandleMap<Thread>,
+        initial_state: State,
+        initial_processor_state: ProcessorState,
+    ) -> Arc<Thread> {
+        store
+            .insert_self_referential(|id| {
+                log::trace!("creating thread id={id}");
+                Arc::new(Self {
+                    id,
+                    properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
+                    processor_state: Mutex::new(initial_processor_state),
+                })
+            })
+            .expect("thread ids not exhausted")
+            .1
+    }
+
     /// Load current thread state.
     pub fn state(&self) -> State {
         let props = ThreadProperties(self.properties.load(core::sync::atomic::Ordering::Acquire));

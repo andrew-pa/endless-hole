@@ -8,7 +8,7 @@ use snafu::{ensure, OptionExt, ResultExt, Snafu};
 
 use crate::{
     memory::{PageAllocator, PhysicalAddress, VirtualAddress},
-    platform::device_tree::{DeviceTree, NodeNotFoundSnafu, OwnedParseError, UnexpectedValueSnafu},
+    platform::device_tree::{DeviceTree, NodeNotFoundSnafu, OwnedParseError},
 };
 
 /// A unique identifier for a single CPU core.
@@ -240,6 +240,8 @@ mod tests {
                 .returning(|_, _, _| Ok(()));
         }
 
-        boot_all_cores(&dt, &pm, epa.into(), &pa).expect("boot all cores");
+        let cores = list_cores(&dt).expect("list CPU cores");
+        assert_eq!(cores.len(), 8);
+        boot_all_cores(&cores, &pm, epa.into(), &pa).expect("boot all cores");
     }
 }

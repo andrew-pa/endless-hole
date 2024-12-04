@@ -1,18 +1,20 @@
 //! Thread switching mechanism.
 
+use alloc::sync::Arc;
 use kernel_core::{
     collections::HandleMap,
     memory::VirtualAddress,
     platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
     process::thread::{
-        scheduler::RoundRobinScheduler, Registers, SavedProgramStatus, Scheduler, Thread,
-        MAX_THREAD_ID,
+        scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus, Scheduler,
+        State, Thread, MAX_THREAD_ID,
     },
 };
+use log::{debug, info, trace};
 use spin::once::Once;
 
 /// Implementation of [`CpuIdReader`] that reads the real system registers.
-struct SystemCpuIdReader;
+pub struct SystemCpuIdReader;
 
 impl CpuIdReader for SystemCpuIdReader {
     fn current_cpu() -> CpuId {
@@ -34,11 +36,27 @@ pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
 pub static THREADS: Once<HandleMap<Thread>> = Once::new();
 
 pub fn init(cores: &[CoreInfo]) {
+    trace!("Initalizing threads...");
+
     let threads = THREADS.call_once(|| HandleMap::new(MAX_THREAD_ID));
 
+    trace!("Creating thread scheduler...");
+
     SCHEDULER.call_once(|| {
-        PlatformScheduler::new(cores.iter().map(|info| (info.id, todo!())).collect())
+        PlatformScheduler::new(
+            cores
+                .iter()
+                .map(|info| {
+                    let idle_thread = Thread::new(threads, State::Running, unsafe {
+                        ProcessorState::new_for_idle_thread()
+                    });
+                    (info.id, idle_thread)
+                })
+                .collect(),
+        )
     });
+
+    info!("Threads initialized!");
 }
 
 /// Read the current value of the `SPSR_EL1` register.
@@ -120,6 +138,11 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
     s.program_counter = read_exception_link_reg();
     s.stack_pointer = read_stack_pointer(0);
     s.registers = *registers;
+    trace!(
+        "saving processor state to thread#{}, pc={:?}",
+        current_thread.id,
+        s.program_counter
+    );
 }
 
 pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
@@ -135,4 +158,9 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
     write_stack_pointer(0, s.stack_pointer);
     write_exception_link_reg(s.program_counter);
     write_saved_program_status(&s.spsr);
+    trace!(
+        "restoring processor state to thread#{}, pc={:?}",
+        current_thread.id,
+        s.program_counter
+    );
 }

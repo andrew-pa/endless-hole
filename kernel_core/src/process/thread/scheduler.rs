@@ -2,11 +2,12 @@
 use core::marker::PhantomData;
 
 use super::{Scheduler, State, Thread};
+use crate::collections::ArcSwap;
 use crate::platform::cpu::{CpuIdReader, Id as CpuId};
 use alloc::{sync::Arc, vec::Vec};
-use arc_swap::ArcSwap;
 use crossbeam::queue::SegQueue;
 use hashbrown::HashMap;
+use log::trace;
 
 /// A simple round-robin thread scheduler.
 pub struct RoundRobinScheduler<C: CpuIdReader> {
@@ -23,11 +24,12 @@ impl<C: CpuIdReader> RoundRobinScheduler<C> {
     /// The CPU ids must match those provided by [`CpuIdReader::current_cpu()`] given `C`.
     #[must_use]
     pub fn new(cpus: Vec<(CpuId, Arc<Thread>)>) -> Self {
+        trace!("Creating RoundRobinScheduler for {} cpus", cpus.len());
         RoundRobinScheduler {
             queues: cpus.iter().map(|(id, _)| (*id, SegQueue::new())).collect(),
             current_threads: cpus
                 .iter()
-                .map(|(id, idle_thread)| (*id, idle_thread.clone().into()))
+                .map(|(id, idle_thread)| (*id, ArcSwap::new(idle_thread.clone())))
                 .collect(),
             cpu_id_reader: PhantomData,
         }
@@ -39,7 +41,7 @@ impl<C: CpuIdReader> Scheduler for RoundRobinScheduler<C> {
         self.current_threads
             .get(&C::current_cpu())
             .expect("cpu has current thread")
-            .load_full()
+            .load()
     }
 
     fn next_time_slice(&self) {

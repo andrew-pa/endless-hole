@@ -178,7 +178,22 @@ impl<T> HandleMap<T> {
     /// # Errors
     /// If there are no handles left, then the value is returned in `Err`.
     pub fn insert(&self, value: Arc<T>) -> Result<Handle, Arc<T>> {
-        let handle = self.allocator.next_handle().ok_or_else(|| value.clone())?;
+        match self.insert_self_referential(|_| value.clone()) {
+            Some((h, _)) => Ok(h),
+            None => Err(value),
+        }
+    }
+
+    /// Get a new handle that refers to the result of `make_value`.
+    /// Returns the handle and the value that was made.
+    ///
+    /// # Errors
+    /// If there are no handles left, then the value is returned in `Err`.
+    pub fn insert_self_referential(
+        &self,
+        make_value: impl FnOnce(Handle) -> Arc<T>,
+    ) -> Option<(Handle, Arc<T>)> {
+        let handle = self.allocator.next_handle()?;
         let mut handle = (handle << self.handle_zeros_prefix_bit_length).rotate_left(8);
         let mut table = &self.table;
         for _ in 0..(self.depth - 1) {
@@ -192,10 +207,12 @@ impl<T> HandleMap<T> {
             handle = handle.rotate_left(8);
         }
         let index = (handle & 0xff) as usize;
+        let val = make_value(handle);
         unsafe {
-            table.put_value(index, value);
+            let res = table.put_value(index, val.clone());
+            assert!(res.is_none(), "Because the allocator always returns a previously free handle, there should be nothing at this table position.");
         }
-        Ok(handle)
+        Some((handle, val))
     }
 
     /// Returns a reference to the value associated with `handle`.
