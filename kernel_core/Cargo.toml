@@ -8,11 +8,16 @@ itertools = { version = "^0.13", default-features = false }
 snafu = { version = "^0.8", default-features = false, features = ["unstable-core-error"] }
 log = { version = "^0.4" }
 byteorder = { version = "^1.5", default-features = false }
+bytemuck = { version = "^1", features = ["derive"] }
 bitfield = { version = "^0.17" }
 spin = "^0.9"
+crossbeam = { version = "0.8", default-features = false, features = ["alloc"] }
+hashbrown = "0.15"
+arc-swap = { version = "^1", features = ["experimental-thread-local"] }
 
 [dev-dependencies]
 paste = "^1.0"
 test-case = "^3.3"
 env_logger = "^0.11"
 mockall = "^0.13"
+rand = "^0.8"

@@ -62,7 +62,7 @@ pub unsafe fn write_mair(value: u64) {
 
 /// Initialize the memory subsystem.
 pub fn init(dt: &DeviceTree<'_>) {
-    trace!("Initializing memory…");
+    debug!("Initializing memory…");
     // create page allocator
     let page_size = PageSize::FourKiB;
     let memory_node = dt
@@ -88,7 +88,7 @@ pub fn init(dt: &DeviceTree<'_>) {
         (memory_start.cast().into(), memory_range.1),
         reserved_regions.into_iter(),
     );
-    debug!(
+    trace!(
         "memory range = {memory_start:?}{memory_range:x?}, reserved = {reserved_regions:x?}, page size = {page_size:?}"
     );
 
