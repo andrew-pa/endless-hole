@@ -12,9 +12,9 @@ use crate::{collections::HandleMap, memory::VirtualAddress};
 pub mod scheduler;
 
 /// An unique ID for a thread.
-pub type Id = u32;
+pub type Id = crate::collections::Handle;
 /// The largest possible thread ID in the system.
-pub const MAX_THREAD_ID: u32 = 0xffff;
+pub const MAX_THREAD_ID: Id = Id::new(0xffff).unwrap();
 
 bitfield::bitfield! {
     /// The value of the SPSR (Saved Program Status) register.

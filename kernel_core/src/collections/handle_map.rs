@@ -2,6 +2,7 @@
 
 use core::{
     marker::PhantomData,
+    num::NonZeroU32,
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
 };
@@ -10,7 +11,8 @@ use alloc::{boxed::Box, sync::Arc};
 
 use super::HandleAllocator;
 
-pub type Handle = u32;
+/// A handle allocated by a [`HandleAllocator`].
+pub type Handle = NonZeroU32;
 
 struct Table<T>([AtomicUsize; 256], PhantomData<Arc<T>>);
 
@@ -162,7 +164,8 @@ impl<T> HandleMap<T> {
     }
 
     fn leaf_table_for_handle(&self, handle: Handle) -> Option<(&Table<T>, usize)> {
-        let mut handle = (handle << self.handle_zeros_prefix_bit_length).rotate_left(8);
+        let mut handle =
+            ((u32::from(handle) - 1) << self.handle_zeros_prefix_bit_length).rotate_left(8);
         let mut table = &self.table;
         for _ in 0..(self.depth - 1) {
             let index = handle & 0xff;
@@ -197,19 +200,20 @@ impl<T> HandleMap<T> {
         make_value: impl FnOnce(Handle) -> Arc<T>,
     ) -> Option<(Handle, Arc<T>)> {
         let handle = self.allocator.next_handle()?;
-        let mut handle = (handle << self.handle_zeros_prefix_bit_length).rotate_left(8);
+        let mut handle_ix =
+            ((u32::from(handle) - 1) << self.handle_zeros_prefix_bit_length).rotate_left(8);
         let mut table = &self.table;
         for _ in 0..(self.depth - 1) {
-            let index = handle & 0xff;
+            let index = handle_ix & 0xff;
             table = unsafe {
                 match table.get_table(index as usize) {
                     Some(t) => t.as_ref(),
                     None => table.new_next_level_table(index as usize).as_ref(),
                 }
             };
-            handle = handle.rotate_left(8);
+            handle_ix = handle_ix.rotate_left(8);
         }
-        let index = (handle & 0xff) as usize;
+        let index = (handle_ix & 0xff) as usize;
         let val = make_value(handle);
         unsafe {
             let res = table.put_value(index, val.clone());
@@ -258,7 +262,7 @@ mod tests {
     #[test]
     fn test_insert_and_get() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         println!("created map");
         let value = Arc::new(42);
         println!("pre-insert");
@@ -273,7 +277,7 @@ mod tests {
     #[test_case(1024)]
     #[test_case(0xffff)]
     fn get_back_what_you_put_in(n: u32) {
-        let map: HandleMap<usize> = HandleMap::new(n);
+        let map: HandleMap<usize> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut handles = Vec::new();
         let mut values = HashSet::new();
         for i in 0..n {
@@ -295,7 +299,7 @@ mod tests {
     #[test_case(1024)]
     #[test_case(0xffff)]
     fn remove_back_what_you_put_in(n: u32) {
-        let map: HandleMap<usize> = HandleMap::new(n);
+        let map: HandleMap<usize> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut handles = Vec::new();
         let mut values = HashSet::new();
         for i in 0..n {
@@ -317,15 +321,15 @@ mod tests {
     #[test]
     fn test_get_unknown_handle() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
-        assert!(handle_map.get(999).is_none());
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
+        assert!(handle_map.get(NonZeroU32::new(999).unwrap()).is_none());
     }
 
     /// Test that `remove` removes the value and subsequent `get` returns `None`.
     #[test]
     fn test_remove() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let handle = handle_map.insert(value.clone()).expect("Insert failed");
         let removed_value = handle_map.remove(handle).expect("Remove failed");
@@ -337,16 +341,16 @@ mod tests {
     #[test]
     fn test_remove_unknown_handle() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
-        assert!(handle_map.remove(999).is_none());
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
+        assert!(handle_map.remove(NonZeroU32::new(999).unwrap()).is_none());
     }
 
     /// Test that inserting more than `max_handle` values returns `Err`.
     #[test_case(1)]
     #[test_case(5)]
     #[test_case(10)]
-    fn test_insert_max_handles(max_handle: Handle) {
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+    fn test_insert_max_handles(max_handle: u32) {
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let mut handles = Vec::new();
         for _ in 0..max_handle {
@@ -362,7 +366,7 @@ mod tests {
     #[test]
     fn test_insert_same_value_different_handles() {
         let max_handle = 10;
-        let handle_map: HandleMap<u32> = HandleMap::new(max_handle);
+        let handle_map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let handle1 = handle_map.insert(value.clone()).expect("Insert failed");
         let handle2 = handle_map.insert(value.clone()).expect("Insert failed");
@@ -379,7 +383,7 @@ mod tests {
     )]
     fn test_concurrent_inserts(num_threads: usize, num_handles_per_thread: usize) {
         let max_handle = num_threads * num_handles_per_thread;
-        let handle_map = Arc::new(HandleMap::new(max_handle as u32));
+        let handle_map = Arc::new(HandleMap::new(NonZeroU32::new(max_handle as u32).unwrap()));
         let value = Arc::new(42);
 
         thread::scope(|s| {
@@ -408,7 +412,7 @@ mod tests {
     #[test_case(0xffff, 32)]
     #[test_case(1234, 5)]
     fn test_concurrent_insert_and_get(n: u32, num_threads: usize) {
-        let map: HandleMap<u32> = HandleMap::new(n);
+        let map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut test_vals = HashMap::new();
         for i in 0..(n / 3) {
             let h = map.insert(Arc::new(i * 10)).unwrap();
@@ -456,7 +460,7 @@ mod tests {
     #[test_case(0xffff, 32)]
     #[test_case(1234, 5)]
     fn test_concurrent_insert_and_remove(n: u32, num_threads: usize) {
-        let map: HandleMap<u32> = HandleMap::new(n);
+        let map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(n).unwrap());
         let mut test_vals = HashMap::new();
         for i in 0..(n / 3) {
             let h = map.insert(Arc::new(i * 10)).unwrap();
@@ -491,7 +495,7 @@ mod tests {
 
     #[test_case(8)]
     fn concurrent_independent_insert_remove(num_threads: usize) {
-        let map: HandleMap<u32> = HandleMap::new(1024);
+        let map: HandleMap<u32> = HandleMap::new(NonZeroU32::new(1024).unwrap());
 
         thread::scope(|s| {
             for n in 0..num_threads {
@@ -512,7 +516,7 @@ mod tests {
     #[test]
     fn test_handle_uniqueness() {
         let max_handle = 1000;
-        let handle_map = HandleMap::new(max_handle);
+        let handle_map = HandleMap::new(NonZeroU32::new(max_handle).unwrap());
         let value = Arc::new(42);
         let mut handles = HashSet::new();
 
