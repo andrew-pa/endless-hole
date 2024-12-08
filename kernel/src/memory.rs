@@ -22,19 +22,19 @@ extern "C" {
     static mut _kernel_page_table_root: u8;
 }
 
-type ChosenPageAllocator = BuddyPageAllocator;
+pub type PlatformPageAllocator = BuddyPageAllocator;
 
 /// The global physical page allocator.
-static PAGE_ALLOCATOR: Once<ChosenPageAllocator> = Once::new();
+static PAGE_ALLOCATOR: Once<PlatformPageAllocator> = Once::new();
 
 #[global_allocator]
 /// The Rust global heap allocator.
-static ALLOCATOR: HeapAllocator<'static, ChosenPageAllocator> = HeapAllocator::new_uninit();
+static ALLOCATOR: HeapAllocator<'static, PlatformPageAllocator> = HeapAllocator::new_uninit();
 
 /// The kernel's own page tables.
 ///
 /// Map addresses in TTBR1, matching `0xffff_????_????_????`.
-static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static, ChosenPageAllocator>>> = Once::new();
+static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static, PlatformPageAllocator>>> = Once::new();
 
 /// Flush the TLB for everything in EL1.
 ///

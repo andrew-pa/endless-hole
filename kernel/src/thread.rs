@@ -5,13 +5,18 @@ use kernel_core::{
     collections::HandleMap,
     memory::VirtualAddress,
     platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
-    process::thread::{
-        scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus, Scheduler,
-        State, Thread, MAX_THREAD_ID,
+    process::{
+        thread::{
+            scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus,
+            Scheduler, State, Thread, MAX_THREAD_ID,
+        },
+        Process,
     },
 };
 use log::{debug, info, trace};
 use spin::once::Once;
+
+use crate::memory::PlatformPageAllocator;
 
 /// Implementation of [`CpuIdReader`] that reads the real system registers.
 pub struct SystemCpuIdReader;
@@ -34,6 +39,7 @@ pub type PlatformScheduler = RoundRobinScheduler<SystemCpuIdReader>;
 
 pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
 pub static THREADS: Once<HandleMap<Thread>> = Once::new();
+pub static PROCESSES: Once<HandleMap<Process<'static, PlatformPageAllocator>>> = Once::new();
 
 pub fn init(cores: &[CoreInfo]) {
     debug!("Initalizing threads...");

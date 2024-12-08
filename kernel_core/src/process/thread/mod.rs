@@ -9,6 +9,8 @@ use spin::Mutex;
 
 use crate::{collections::HandleMap, memory::VirtualAddress};
 
+use super::Process;
+
 pub mod scheduler;
 
 /// An unique ID for a thread.
@@ -165,6 +167,8 @@ impl ThreadProperties {
 pub struct Thread {
     /// The unique id for this thread.
     pub id: Id,
+
+    pub parent: Option<Arc<Process>>,
 
     /// Thread status, etc
     properties: AtomicU64,
