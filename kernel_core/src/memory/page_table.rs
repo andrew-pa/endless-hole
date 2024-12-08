@@ -419,8 +419,8 @@ impl<PA: PageAllocator, F: FnMut(*mut Entry, PhysicalAddress) -> Result<(), Erro
 /// A page table data structure in memory.
 ///
 /// This structure manages the entire tree of tables.
-pub struct PageTables<'pa, PA: PageAllocator> {
-    page_allocator: &'pa PA,
+pub struct PageTables<'pa> {
+    page_allocator: &'pa dyn PageAllocator,
     /// this is also the number of entries in one table (because a table takes exactly one page).
     entries_per_page: usize,
     root: *mut Entry,
