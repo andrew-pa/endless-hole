@@ -406,7 +406,7 @@ pub trait MemoryManagmentUnit {
     ///
     /// The page tables provided must be valid or else this function has undefined behavior.
     /// Valid page tables for the kernel must map the caller's return address correctly or else this has undefined behavior. Likewise with the stack, etc.
-    unsafe fn activate_page_tables<PA: PageAllocator>(&self, tables: &PageTables<'_, PA>);
+    unsafe fn activate_page_tables(&self, tables: &PageTables<'_>);
 }
 
 #[cfg(test)]

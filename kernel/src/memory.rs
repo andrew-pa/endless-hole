@@ -34,7 +34,7 @@ static ALLOCATOR: HeapAllocator<'static, PlatformPageAllocator> = HeapAllocator:
 /// The kernel's own page tables.
 ///
 /// Map addresses in TTBR1, matching `0xffff_????_????_????`.
-static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static, PlatformPageAllocator>>> = Once::new();
+static KERNEL_PAGE_TABLES: Once<Mutex<PageTables<'static>>> = Once::new();
 
 /// Flush the TLB for everything in EL1.
 ///

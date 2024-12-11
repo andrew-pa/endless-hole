@@ -1,5 +1,5 @@
 //! Threads
-use core::sync::atomic::AtomicU64;
+use core::sync::atomic::{AtomicIsize, AtomicU64};
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
@@ -168,6 +168,7 @@ pub struct Thread {
     /// The unique id for this thread.
     pub id: Id,
 
+    /// The process this thread is running in.
     pub parent: Option<Arc<Process>>,
 
     /// Thread status, etc
@@ -184,6 +185,7 @@ impl Thread {
     /// Panics if there are no thread IDs left.
     pub fn new(
         store: &HandleMap<Thread>,
+        parent: Option<Arc<Process>>,
         initial_state: State,
         initial_processor_state: ProcessorState,
     ) -> Arc<Thread> {
@@ -192,6 +194,7 @@ impl Thread {
                 log::trace!("creating thread id={id}");
                 Arc::new(Self {
                     id,
+                    parent,
                     properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
                     processor_state: Mutex::new(initial_processor_state),
                 })
@@ -208,7 +211,7 @@ impl Thread {
 }
 
 /// Abstract scheduler policy
-#[cfg_attr(test, automock)]
+#[cfg_attr(test, mockall::automock)]
 pub trait Scheduler: Sync {
     /// Get the currently running thread.
     fn current_thread(&self) -> Arc<Thread>;

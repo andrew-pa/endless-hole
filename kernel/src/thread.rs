@@ -16,8 +16,6 @@ use kernel_core::{
 use log::{debug, info, trace};
 use spin::once::Once;
 
-use crate::memory::PlatformPageAllocator;
-
 /// Implementation of [`CpuIdReader`] that reads the real system registers.
 pub struct SystemCpuIdReader;
 
@@ -39,7 +37,7 @@ pub type PlatformScheduler = RoundRobinScheduler<SystemCpuIdReader>;
 
 pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
 pub static THREADS: Once<HandleMap<Thread>> = Once::new();
-pub static PROCESSES: Once<HandleMap<Process<'static, PlatformPageAllocator>>> = Once::new();
+pub static PROCESSES: Once<HandleMap<Process>> = Once::new();
 
 pub fn init(cores: &[CoreInfo]) {
     debug!("Initalizing threads...");
@@ -51,7 +49,7 @@ pub fn init(cores: &[CoreInfo]) {
     let init_threads: Vec<_> = cores
         .iter()
         .map(|info| {
-            let idle_thread = Thread::new(threads, State::Running, unsafe {
+            let idle_thread = Thread::new(threads, None, State::Running, unsafe {
                 ProcessorState::new_for_idle_thread()
             });
             (info.id, idle_thread)
