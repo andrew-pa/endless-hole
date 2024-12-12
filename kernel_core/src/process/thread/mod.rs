@@ -1,10 +1,8 @@
 //! Threads
-use core::sync::atomic::{AtomicIsize, AtomicU64};
+use core::sync::atomic::AtomicU64;
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
-#[cfg(test)]
-use mockall::automock;
 use spin::Mutex;
 
 use crate::{collections::HandleMap, memory::VirtualAddress};

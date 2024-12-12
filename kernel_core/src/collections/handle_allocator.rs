@@ -5,9 +5,12 @@ use core::{
 };
 use snafu::ensure;
 
+/// Errors that can occur when freeing a handle from a [`HandleAllocator`].
 #[derive(Debug, snafu::Snafu)]
 pub enum Error {
+    /// The handle was not allocated by this allocator.
     NotAllocated,
+    /// The handle was out of the bounds of values used by this allocator.
     OutOfBounds,
 }
 
@@ -141,6 +144,17 @@ impl HandleAllocator {
                     continue;
                 }
             }
+        }
+    }
+
+    /// Frees all allocated handles in the allocator, causing them to all be invalid.
+    ///
+    /// # Safety
+    /// This function is only safe if you have some way to track which handles you have
+    /// invalidated, i.e. a generation counter!
+    pub unsafe fn reset(&self) {
+        for word in &self.bits {
+            word.store(0, Ordering::Release);
         }
     }
 }

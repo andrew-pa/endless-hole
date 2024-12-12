@@ -8,7 +8,7 @@ use crate::collections::{HandleAllocator, HandleAllocatorError};
 /// ASIDs are 16-bit values used by a system to tag and identify different
 /// process address spaces. The value `0` is reserved to indicate an invalid
 /// or "no ASID".
-type AddressSpaceId = NonZeroU16;
+pub type AddressSpaceId = NonZeroU16;
 
 /// `AsidPool` manages a pool of ASIDs (16-bit integers) using a `HandleAllocator`
 /// and a generation counter. The generation counter ensures that ASIDs can be

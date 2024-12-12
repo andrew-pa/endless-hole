@@ -432,6 +432,9 @@ pub struct PageTables<'pa> {
 
 // SAFETY: this is safe because each `PageTables` owns the memory it points to exclusively.
 unsafe impl Send for PageTables<'_> {}
+// SAFETY: this is safe because each `PageTables` owns the memory it points to exclusively, and
+// mutation must happen via `&mut PageTables`.
+unsafe impl Sync for PageTables<'_> {}
 
 impl<'pa> PageTables<'pa> {
     /// Create a new page tables structure that has no mappings.
