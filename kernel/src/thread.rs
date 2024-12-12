@@ -3,15 +3,20 @@
 use alloc::vec::Vec;
 use kernel_core::{
     collections::HandleMap,
-    memory::VirtualAddress,
+    memory::{AddressSpaceIdPool, VirtualAddress},
     platform::cpu::{CoreInfo, CpuIdReader, Id as CpuId},
-    process::thread::{
-        scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus, Scheduler,
-        State, Thread, MAX_THREAD_ID,
+    process::{
+        thread::{
+            scheduler::RoundRobinScheduler, ProcessorState, Registers, SavedProgramStatus,
+            Scheduler, State, Thread, MAX_THREAD_ID,
+        },
+        Process,
     },
 };
 use log::{debug, info, trace};
 use spin::once::Once;
+
+use crate::memory::switch_el0_context;
 
 /// Implementation of [`CpuIdReader`] that reads the real system registers.
 pub struct SystemCpuIdReader;
@@ -34,6 +39,8 @@ pub type PlatformScheduler = RoundRobinScheduler<SystemCpuIdReader>;
 
 pub static SCHEDULER: Once<PlatformScheduler> = Once::new();
 pub static THREADS: Once<HandleMap<Thread>> = Once::new();
+pub static PROCESSES: Once<HandleMap<Process>> = Once::new();
+static ASID_POOL: Once<AddressSpaceIdPool> = Once::new();
 
 pub fn init(cores: &[CoreInfo]) {
     debug!("Initalizing threads...");
@@ -45,7 +52,7 @@ pub fn init(cores: &[CoreInfo]) {
     let init_threads: Vec<_> = cores
         .iter()
         .map(|info| {
-            let idle_thread = Thread::new(threads, State::Running, unsafe {
+            let idle_thread = Thread::new(threads, None, State::Running, unsafe {
                 ProcessorState::new_for_idle_thread()
             });
             (info.id, idle_thread)
@@ -53,6 +60,8 @@ pub fn init(cores: &[CoreInfo]) {
         .collect();
 
     SCHEDULER.call_once(|| PlatformScheduler::new(&init_threads));
+
+    ASID_POOL.call_once(AddressSpaceIdPool::default);
 
     info!("Threads initialized!");
 }
@@ -124,10 +133,14 @@ pub unsafe fn write_stack_pointer(el: u8, sp: VirtualAddress) {
 }
 
 pub unsafe fn save_current_thread_state(registers: &Registers) {
+    // Determine the current running thread according to the scheduler.
+    // We assume that this thread is the one currently executing on this processor.
     let current_thread = SCHEDULER
         .get()
         .expect("scheduler init before thread switch")
         .current_thread();
+
+    // Save the processor state into the thread object.
     let mut s = current_thread
         .processor_state
         .try_lock()
@@ -136,6 +149,7 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
     s.program_counter = read_exception_link_reg();
     s.stack_pointer = read_stack_pointer(0);
     s.registers = *registers;
+
     trace!(
         "saving processor state to thread#{}, pc={:?}",
         current_thread.id,
@@ -144,10 +158,20 @@ pub unsafe fn save_current_thread_state(registers: &Registers) {
 }
 
 pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
+    // Determine the current running thread according to the scheduler.
     let current_thread = SCHEDULER
         .get()
         .expect("scheduler init before thread switch")
         .current_thread();
+
+    // Switch to this thread's process' page table, if it is a user space thread.
+    if let Some(process) = current_thread.parent.as_ref() {
+        let (asid, full_flush) = process.get_address_space_id(ASID_POOL.get().unwrap());
+        let pt = process.page_tables.read();
+        switch_el0_context(&pt, asid, full_flush);
+    }
+
+    // Restore the state of the processor.
     let s = current_thread
         .processor_state
         .try_lock()
@@ -156,6 +180,7 @@ pub unsafe fn restore_current_thread_state(registers: &mut Registers) {
     write_stack_pointer(0, s.stack_pointer);
     write_exception_link_reg(s.program_counter);
     write_saved_program_status(&s.spsr);
+
     trace!(
         "restoring processor state to thread#{}, pc={:?}",
         current_thread.id,

@@ -33,6 +33,9 @@ pub use subtract_ranges::*;
 pub mod page_table;
 pub use page_table::PageTables;
 
+mod asid_pool;
+pub use asid_pool::{AddressSpaceId, AddressSpaceIdPool};
+
 /// A 48-bit physical address pointer that is not part of a virtual address space.
 ///
 /// Although in the kernel the virtual addresses are identity mapped, the high bits of the address
@@ -406,7 +409,7 @@ pub trait MemoryManagmentUnit {
     ///
     /// The page tables provided must be valid or else this function has undefined behavior.
     /// Valid page tables for the kernel must map the caller's return address correctly or else this has undefined behavior. Likewise with the stack, etc.
-    unsafe fn activate_page_tables<PA: PageAllocator>(&self, tables: &PageTables<'_, PA>);
+    unsafe fn activate_page_tables(&self, tables: &PageTables<'_>);
 }
 
 #[cfg(test)]

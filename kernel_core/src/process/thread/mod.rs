@@ -3,18 +3,18 @@ use core::sync::atomic::AtomicU64;
 
 use alloc::sync::Arc;
 use bytemuck::Contiguous;
-#[cfg(test)]
-use mockall::automock;
 use spin::Mutex;
 
 use crate::{collections::HandleMap, memory::VirtualAddress};
 
+use super::Process;
+
 pub mod scheduler;
 
 /// An unique ID for a thread.
-pub type Id = u32;
+pub type Id = crate::collections::Handle;
 /// The largest possible thread ID in the system.
-pub const MAX_THREAD_ID: u32 = 0xffff;
+pub const MAX_THREAD_ID: Id = Id::new(0xffff).unwrap();
 
 bitfield::bitfield! {
     /// The value of the SPSR (Saved Program Status) register.
@@ -166,6 +166,9 @@ pub struct Thread {
     /// The unique id for this thread.
     pub id: Id,
 
+    /// The process this thread is running in.
+    pub parent: Option<Arc<Process>>,
+
     /// Thread status, etc
     properties: AtomicU64,
 
@@ -180,6 +183,7 @@ impl Thread {
     /// Panics if there are no thread IDs left.
     pub fn new(
         store: &HandleMap<Thread>,
+        parent: Option<Arc<Process>>,
         initial_state: State,
         initial_processor_state: ProcessorState,
     ) -> Arc<Thread> {
@@ -188,6 +192,7 @@ impl Thread {
                 log::trace!("creating thread id={id}");
                 Arc::new(Self {
                     id,
+                    parent,
                     properties: AtomicU64::new(ThreadProperties::new(initial_state).0),
                     processor_state: Mutex::new(initial_processor_state),
                 })
@@ -204,7 +209,7 @@ impl Thread {
 }
 
 /// Abstract scheduler policy
-#[cfg_attr(test, automock)]
+#[cfg_attr(test, mockall::automock)]
 pub trait Scheduler: Sync {
     /// Get the currently running thread.
     fn current_thread(&self) -> Arc<Thread>;
